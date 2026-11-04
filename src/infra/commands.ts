@@ -81,6 +81,14 @@ export class Commands {
       return stdout
     } catch (error) { throw commandError(error, program) }
   }
+  /** Runs a program with extra environment variables (such as a credential file) merged over the deployment environment. */
+  async runWith(program: string, args: string[], extra: Record<string, string>): Promise<string> {
+    try {
+      const { stdout } = await exec(program, args, { signal: this.signal, timeout: TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024,
+        env: { ...process.env, ...this.environment, ...extra } })
+      return stdout
+    } catch (error) { throw commandError(error, program) }
+  }
   /** Runs the agent's GitHub CLI and parses its JSON output; callers should prefer `api`, which is restricted to the configured repository and validates output. */
   async gh<T>(args: string[]): Promise<T> { return JSON.parse(await this.run(this.github.cli, args)) as T }
   /**

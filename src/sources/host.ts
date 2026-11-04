@@ -14,6 +14,9 @@ export const HEALTH_TEXT = {
   feishuCliUnset: 'The Source is on, and its bot lark-cli is not set',
   feishuBotMissing: 'Waiting for the Feishu bot',
   githubUnset: 'No GitHub account is configured',
+  jiraCliUnset: 'The Source is on, and its jira CLI is not set',
+  jiraAuthFailed: 'The jira CLI cannot read its account',
+  jiraPollIncomplete: 'A polling round could not read every page, so nothing changed',
   pollFailures: '{count} consecutive failed polls; last: {error}',
 } as const
 export type HealthCode = keyof typeof HEALTH_TEXT

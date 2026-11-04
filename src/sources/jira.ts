@@ -1,0 +1,201 @@
+/** Jira Source: a sprint query polled through the local `jira` CLI, with comments read back as triggers. */
+import type { Context } from '@deepseek-ai/cordis'
+import { z } from 'zod'
+import { readFile } from 'node:fs/promises'
+import { key, type Trigger } from '../core/index.ts'
+import { KV } from '../kv.ts'
+import type { Localized, SourceKind } from './kind.ts'
+import { commentTrigger, fingerprint, issueTrigger, jiraChannel, jiraThread, SOURCE, type JiraComment, type JiraIssue } from './jira-trigger.ts'
+import { plan, type PendingEntry, type SeenEntry } from './jira-plan.ts'
+import { health, sourceContext, type SourceContext } from './host.ts'
+import { pause } from './poll.ts'
+
+const Z = z.object({
+  cli: z.string().trim().default('jira'),
+  envFile: z.string().trim().default(''),
+  baseUrl: z.string().trim().default(''),
+  projects: z.array(z.string().regex(/^[A-Z][A-Z0-9_]*$/)).min(1).default(['PROJ']),
+  jql: z.string().trim().min(1).default('assignee = currentUser() AND sprint in openSprints() AND statusCategory != Done'),
+  pollSeconds: z.number().int().min(60).max(3600).default(300),
+  maxTriggersPerRound: z.number().int().min(1).max(100).default(20),
+  commentLookback: z.number().int().min(1).max(100).default(50),
+}).strict()
+export type JiraConfig = z.infer<typeof Z>
+
+/** Jira's issue as `--raw` returns it, narrowed to the fields this Source reads. */
+const RawIssue = z.looseObject({
+  key: z.string(),
+  self: z.string().optional(),
+  fields: z.looseObject({
+    summary: z.string(),
+    description: z.string().nullish(),
+    updated: z.string(),
+    status: z.looseObject({ id: z.string() }),
+    assignee: z.looseObject({ name: z.string() }).nullish(),
+    components: z.array(z.looseObject({ name: z.string() })).default([]),
+    labels: z.array(z.string()).default([]),
+  }),
+})
+const RawComment = z.looseObject({ id: z.string(), body: z.string().nullish(), created: z.string(),
+  author: z.looseObject({ name: z.string() }).nullish() })
+
+/** Maps one raw issue onto the shape the triggers and the planner use. */
+export function parseIssue(raw: z.infer<typeof RawIssue>, baseUrl: string): JiraIssue {
+  const { fields } = raw
+  const browse = baseUrl ? `${baseUrl.replace(/\/+$/, '')}/browse/${raw.key}` : (raw.self ?? '')
+  return { key: raw.key, summary: fields.summary, ...fields.description ? { description: fields.description } : {},
+    updated: fields.updated, statusId: fields.status.id, ...fields.assignee ? { assignee: fields.assignee.name } : {},
+    components: fields.components.map(item => item.name), labels: fields.labels, url: browse }
+}
+/** Maps one raw comment; the author falls back to an empty id when Jira hides it, never to the agent. */
+export function parseComment(raw: z.infer<typeof RawComment>): JiraComment {
+  return { id: raw.id, body: raw.body ?? '', author: raw.author?.name ?? '', created: raw.created }
+}
+/** Reads KEY=VALUE lines from the credential file. Values stay in this process and are never logged. */
+export async function credentials(config: JiraConfig): Promise<Record<string, string>> {
+  if (!config.envFile) return {}
+  try {
+    const text = await readFile(config.envFile, 'utf8')
+    return Object.fromEntries(text.split('\n').map(line => line.trim()).filter(line => line && !line.startsWith('#')).map(line => {
+      const at = line.indexOf('=')
+      return at < 0 ? [line, ''] : [line.slice(0, at).trim(), line.slice(at + 1).trim().replace(/^["']|["']$/g, '')]
+    }))
+  } catch { return {} }
+}
+const run = (ctx: SourceContext, config: JiraConfig, env: Record<string, string>, args: string[]): Promise<string> =>
+  ctx.commands.runWith(config.cli, args, env)
+
+/** Parses CLI output, or undefined when it is not JSON (a failure the caller treats as incomplete). */
+const jsonOf = (text: string): unknown => { try { return JSON.parse(text) } catch { return undefined } }
+const page = 100
+/** Reads every page of the query; a short page ends it, and any failure makes the round incomplete. */
+async function readIssues(ctx: SourceContext, config: JiraConfig, env: Record<string, string>, project: string): Promise<{ issues: JiraIssue[]; complete: boolean }> {
+  const issues: JiraIssue[] = []
+  for (let from = 0; ; from += page) {
+    const result = await run(ctx, config, env, ['issue', 'list', '-p', project, '-q', config.jql, '--raw', '--paginate', `${from}:${page}`])
+    const raw = z.array(z.unknown()).safeParse(jsonOf(result))
+    if (!raw.success) return { issues, complete: false }
+    const parsed = raw.data.map(item => RawIssue.safeParse(item)).filter(item => item.success).map(item => item.data)
+    issues.push(...parsed.map(item => parseIssue(item, config.baseUrl)))
+    if (parsed.length < page) return { issues, complete: true }
+  }
+}
+/** True when the issue left the query for a reason the Source can confirm: it is done, or no longer assigned to the operator. */
+/** True when the issue left the query for a reason the Source can confirm: it is no longer assigned to the operator. */
+function departed(issue: z.infer<typeof RawIssue>, login: string): boolean {
+  return (issue.fields.assignee?.name ?? '') !== login
+}
+/** Reads an issue's comments after the stored cursor and returns the new ones, oldest first. */
+async function readComments(ctx: SourceContext, config: JiraConfig, env: Record<string, string>, issue: JiraIssue, cursor: string): Promise<JiraComment[]> {
+  const result = await run(ctx, config, env, ['issue', 'view', issue.key, '--comments', String(config.commentLookback), '--raw']).then(jsonOf, () => undefined)
+  const raw = z.looseObject({ fields: z.looseObject({ comment: z.looseObject({ comments: z.array(z.unknown()).default([]) }) }) }).safeParse(result)
+  if (!raw.success) return []
+  const comments = raw.data.fields.comment.comments.map(item => RawComment.safeParse(item)).filter(item => item.success).map(item => parseComment(item.data))
+  return comments.filter(item => Number(item.id) > Number(cursor)).sort((a, b) => Number(a.id) - Number(b.id))
+}
+
+/** Runs one polling round; returns false when the round was incomplete and changed nothing. */
+export async function pollRound(ctx: SourceContext): Promise<boolean> {
+  const config = ctx.config<JiraConfig>(SOURCE)
+  if (!config) { ctx.report('jira', health('paused', 'sourceOff')); return true }
+  const env = await credentials(config)
+  const login = await ctx.commands.runWith(config.cli, ['me'], env).then((value: string) => value.trim(), () => '')
+  if (!login) { ctx.report('jira', health('error', 'jiraAuthFailed')); return true }
+  let issues: JiraIssue[] = []
+  let complete = true
+  for (const project of config.projects) {
+    const read = await readIssues(ctx, config, env, project)
+    issues = [...issues, ...read.issues]
+    complete = complete && read.complete
+  }
+  const seen = ctx.state.get(KV.jira.seen) ?? {}
+  const pending = ctx.state.get(KV.jira.pending) ?? []
+  // Departures are confirmed one by one; an unconfirmed key stays, so a short list never forgets an issue.
+  const present = new Set(issues.map(issue => issue.key))
+  const left: string[] = []
+  if (complete) for (const key of Object.keys(seen)) {
+    if (present.has(key)) continue
+    const raw = await run(ctx, config, env, ['issue', 'view', key, '--raw']).then(value => RawIssue.safeParse(jsonOf(value)), () => ({ success: false } as const))
+    if (raw.success && departed(raw.data, login)) left.push(key)
+  }
+  const result = plan({ issues, seen, pending, limit: config.maxTriggersPerRound, left, complete })
+  for (const issue of result.dispatch) {
+    await ctx.receive(issueTrigger(issue))
+    ctx.threads.describe(jiraThread(issue.key), { label: `${issue.key} ${issue.summary}`, url: issue.url })
+  }
+  ctx.atomic(() => { ctx.state.set(KV.jira.seen, result.seen); ctx.state.set(KV.jira.pending, result.pending) })
+  if (!complete) { ctx.report('jira', health('error', 'jiraPollIncomplete')); return false }
+  // Comments: the issues just dispatched, and every issue an open ticket already works on.
+  const watched = new Set(result.dispatch.map(issue => issue.key))
+  for (const ticket of ctx.tickets.open()) for (const channel of ticket.channels) if (channel.source === SOURCE) watched.add(String(channel.address.issue ?? ''))
+  const byKey = new Map(issues.map(issue => [issue.key, issue]))
+  for (const issueKey of watched) {
+    const issue = byKey.get(issueKey)
+    if (!issue) continue
+    const cursor = ctx.state.get(KV.jira.comment(issueKey)) ?? '0'
+    const comments = await readComments(ctx, config, env, issue, cursor).catch(() => [] as JiraComment[])
+    if (!comments.length) continue
+    for (const comment of comments) await ctx.receive(commentTrigger(issue, comment))
+    ctx.state.set(KV.jira.comment(issueKey), comments.at(-1)!.id)
+  }
+  ctx.report('jira', { state: 'ready', detail: `${issues.length} issues; ${result.pending.length} queued`, at: new Date().toISOString() })
+  return true
+}
+
+async function watch(ctx: SourceContext, signal: AbortSignal): Promise<void> {
+  let failures = 0
+  await ctx.ready
+  if (!ctx.configured()) { ctx.report('jira', health('paused', 'setupPending')); return }
+  if (!ctx.config<JiraConfig>(SOURCE)?.cli) { ctx.report('jira', health('paused', 'jiraCliUnset')); return }
+  while (!signal.aborted) {
+    try { await pollRound(ctx); failures = 0 }
+    catch (error) { failures += 1; if (failures >= 3 && !signal.aborted) ctx.report('jira', { state: 'error', detail: String(error) }) }
+    await pause((ctx.config<JiraConfig>(SOURCE)?.pollSeconds ?? 300) * 1000, signal)
+  }
+}
+
+export const jiraKind: SourceKind<JiraConfig> = {
+  kind: SOURCE,
+  title: { zh: 'Jira', en: 'Jira' },
+  description: { zh: '轮询当前 sprint 中指派给操作者的 issue，并读取其评论。', en: 'Polls the issues assigned to the operator in the open sprint and reads their comments.' },
+  schema: Z,
+  fields: [
+    { key: 'cli', type: 'text', label: { zh: 'jira CLI', en: 'jira CLI' }, hint: { zh: '命令名或绝对路径；用 jira-cli。', en: 'A command name or absolute path; jira-cli.' } },
+    { key: 'envFile', type: 'text', label: { zh: '凭证文件', en: 'Credential file' }, hint: { zh: '在调用 CLI 前导出的文件，含 JIRA_USERNAME 与 JIRA_API_TOKEN；留空则用环境变量。', en: 'Exported before the CLI runs: JIRA_USERNAME and JIRA_API_TOKEN. Empty uses the environment.' } },
+    { key: 'projects', type: 'rows', label: { zh: '项目', en: 'Projects' }, columns: [{ key: 'id', type: 'text', label: { zh: '项目 key', en: 'Project key' }, pattern: '[A-Z][A-Z0-9_]*' }] },
+    { key: 'jql', type: 'text', label: { zh: 'JQL', en: 'JQL' } },
+    { key: 'pollSeconds', type: 'number', advanced: true, min: 60, max: 3600, label: { zh: '轮询间隔 / 秒', en: 'Polling interval / seconds' } },
+    { key: 'maxTriggersPerRound', type: 'number', advanced: true, min: 1, max: 100, label: { zh: '每轮最多派发', en: 'Triggers per round' } },
+    { key: 'commentLookback', type: 'number', advanced: true, min: 1, max: 100, label: { zh: '读取评论条数', en: 'Comments read' } },
+  ],
+  health: ['jira'],
+  scope: () => ({ listened: true, observed: false }),
+  channel: {
+    send: async () => 'gone',
+    link: address => ({ url: '', label: { zh: 'Jira', en: 'Jira' } }),
+  },
+  find: query => ({ threads: /^[A-Z][A-Z0-9_]*-\d+$/.test(query.trim()) ? [jiraThread(query.trim())] : [], terms: [] }),
+  policy: {
+    schema: z.object({ allowed: z.array(z.object({ id: z.string().regex(/^[A-Za-z0-9._@-]+$/), name: z.string().trim().max(100).optional() }).strict()).default([]) }).strict(),
+    fields: [{ key: 'allowed', type: 'rows', label: { zh: '能发起工作的 Jira 账号', en: 'Jira accounts that may originate work' },
+      columns: [{ key: 'id', type: 'text', label: { zh: '账号', en: 'Account' }, pattern: '[A-Za-z0-9._@-]+' }, { key: 'name', type: 'text', label: { zh: '名字', en: 'Name' }, optional: true }] }],
+    explicit: { zh: '名单里的账号被指派这个 issue。', en: 'An account on the list is assigned the issue.' },
+  },
+  environment: {
+    variables: [{ key: 'DSH_SUPERAGENT_JIRA_ISSUE', description: { zh: '本工单的 Jira issue key，例如 PROJ-123。', en: 'The ticket\'s Jira issue key, such as PROJ-123.' } }],
+    values: ({ trigger }) => ({ DSH_SUPERAGENT_JIRA_ISSUE: trigger?.source === SOURCE ? String(trigger.meta.issue ?? '') : '' }),
+  },
+  facts: (): Record<string, Localized | string> => ({}),
+}
+
+export const name = 'dsh-superagent-jira'
+export const inject = ['orchestrator']
+export function apply(ctx: Context): void {
+  ctx.effect(() => ctx.orchestrator.sources.register(jiraKind), 'jira: source kind')
+  ctx.effect(() => {
+    const source = sourceContext(ctx.orchestrator, jiraKind)
+    const controller = new AbortController()
+    const running = watch(source, controller.signal).catch((error: unknown) => { source.report('jira', { state: 'error', detail: String(error) }) })
+    return async () => { controller.abort(); await running }
+  })
+}
