@@ -279,6 +279,12 @@ export interface Ticket {
   title: string
   decisionId: string
   mandate: Mandate
+  /** Workspace repositories this ticket checked out, in the order it did; empty until a ticket needs code. */
+  repos?: string[]
+  /** What the ticket delivers; `mr` unless the request says otherwise. */
+  deliver?: { kind: 'mr' | 'doc' | 'image'; target?: string }
+  /** One entry per repository the ticket checked out; the ticket ends only when every entry is terminal. */
+  deliverables?: { repo: string; project: string; kind: 'mr'; ref?: number; state: 'pending' | 'open' | 'merged' | 'closed' | 'failed' }[]
   /** The Channels of the messages it was accepted from, which its replies go to. */
   channels: ChannelRef[]
   /** When, by whom, and how the ticket ended, with a person's or the host's reason beyond the outcome; an open ticket has none. */
