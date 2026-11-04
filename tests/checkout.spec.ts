@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
@@ -123,5 +123,27 @@ describe('reuse and failure', () => {
     expect(existsSync(join(ticketDir, 'console', '.git'))).toBe(false)
     rmSync(join(ticketDir, 'backend'), { recursive: true, force: true })
     await expect(checkout(request(['console', 'backend']))).resolves.toHaveLength(2)
+  })
+})
+
+describe('inputs a ticket must not control', () => {
+  it('refuses a branch that is not an agent/<name> ref', async () => {
+    await workspaceWith(['console'])
+    await expect(checkout(request(['console'], { branch: '-x' }))).rejects.toMatchObject({ code: 'invalidBranch' })
+    await expect(checkout(request(['console'], { branch: 'agent/' }))).rejects.toMatchObject({ code: 'invalidBranch' })
+    await expect(checkout(request(['console'], { branch: 'refs/heads/agent/x' }))).rejects.toMatchObject({ code: 'invalidBranch' })
+    expect(existsSync(join(ticketDir, 'console'))).toBe(false)
+  })
+  it('refuses a ticket directory that is a symbolic link', async () => {
+    await workspaceWith(['console'])
+    const real = join(dir, 'real-ticket'); mkdirSync(real); symlinkSync(real, join(dir, 'linked-ticket'))
+    await expect(checkout(request(['console'], { directory: join(dir, 'linked-ticket') }))).rejects.toMatchObject({ code: 'invalidDirectory' })
+  })
+  it('does not take over a lock whose process is alive, however old', async () => {
+    await workspaceWith(['console'])
+    const lock = join(ticketDir, '.checkout'); mkdirSync(lock, { recursive: true })
+    const file = join(lock, 'console.lock'); writeFileSync(file, String(process.pid))
+    const old = new Date(Date.now() - 31 * 60_000); utimesSync(file, old, old)
+    await expect(checkout(request(['console']))).rejects.toMatchObject({ code: 'busy' })
   })
 })

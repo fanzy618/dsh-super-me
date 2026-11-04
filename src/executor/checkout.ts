@@ -9,7 +9,7 @@ const run = promisify(execFile)
 /** Git runs under a deadline and never prompts: a hung or credential-seeking command must fail the call, not hold the tool. */
 const git = (args: string[]): Promise<{ stdout: string; stderr: string }> =>
   run('git', args, { timeout: 120_000, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } })
-export type CheckoutCode = 'invalidName' | 'missing' | 'notDirectory' | 'symlink' | 'outside' | 'protected' | 'busy' | 'gitFailed'
+export type CheckoutCode = 'invalidName' | 'invalidBranch' | 'invalidDirectory' | 'missing' | 'notDirectory' | 'symlink' | 'outside' | 'protected' | 'busy' | 'gitFailed'
 /** A refused checkout; `code` names the check that failed. */
 export class CheckoutError extends Error {
   constructor(readonly code: CheckoutCode, message: string) { super(message); this.name = 'CheckoutError' }
@@ -60,13 +60,26 @@ async function locate(workspace: string, name: string, forbidden: Set<string>): 
   return real
 }
 
-/** Whether the process that wrote a lock file is still alive; a lock whose process is gone or that is old can be taken over. */
+/** A ticket branch: `agent/<name>` and a ref name git accepts, so it never reads as an option or another revision. */
+async function assertBranch(branch: string): Promise<void> {
+  if (!branch.startsWith('agent/') || branch.length <= 'agent/'.length) throw new CheckoutError('invalidBranch', `${branch} is not an agent/<name> branch`)
+  await git(['check-ref-format', '--branch', branch]).catch(() => { throw new CheckoutError('invalidBranch', `${branch} is not a valid branch name`) })
+}
+
+/** The ticket directory itself, resolved and checked: a checkout must not be steered outside it by a link. */
+async function ticketDirectory(directory: string): Promise<string> {
+  let stats
+  try { stats = await lstat(directory) } catch { throw new CheckoutError('invalidDirectory', `the ticket directory ${directory} does not exist`) }
+  if (stats.isSymbolicLink() || !stats.isDirectory()) throw new CheckoutError('invalidDirectory', `the ticket directory ${directory} is not a plain directory`)
+  return realpath(directory)
+}
+
+/** Whether the process that wrote a lock file is still alive; only a lock whose process is gone can be taken over. */
 async function staleLock(file: string): Promise<boolean> {
   try {
     const [pid, written] = await Promise.all([readFile(file, 'utf8'), stat(file)])
     const owner = Number(pid.trim())
-    if (Date.now() - written.mtimeMs >= STALE_LOCK_MS) return true
-    if (!Number.isInteger(owner) || owner <= 0) return false
+    if (!Number.isInteger(owner) || owner <= 0) return Date.now() - written.mtimeMs >= STALE_LOCK_MS
     try { process.kill(owner, 0); return false } catch { return true }
   } catch { return false }
 }
@@ -108,7 +121,7 @@ async function reusable(repository: string, path: string, branch: string): Promi
 /** Adds a worktree for one repository, reusing the one a previous call made. Reports whether it created the branch. */
 async function worktree(repository: string, path: string, branch: string): Promise<{ branch: boolean }> {
   if (await reusable(repository, path, branch)) return { branch: false }
-  const existing = await git(['-C', repository, 'rev-parse', '--verify', '--quiet', branch]).then(() => true, () => false)
+  const existing = await git(['-C', repository, 'rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]).then(() => true, () => false)
   const args = existing ? ['worktree', 'add', path, branch] : ['worktree', 'add', '-b', branch, path]
   try { await git(['-C', repository, '-c', 'core.hooksPath=/dev/null', ...args]) }
   catch (error) { throw new CheckoutError('gitFailed', `git worktree add failed for ${repository}: ${error instanceof Error ? error.message : String(error)}`) }
@@ -125,26 +138,29 @@ export async function checkout(request: CheckoutRequest): Promise<CheckedOut[]> 
   const { workspace, directory, branch } = request
   const repos = [...new Set(request.repos)]
   if (!repos.length) return []
+  await assertBranch(branch)
+  const root = await ticketDirectory(directory)
   const forbidden = await protectedNames(workspace, request.protected)
   const roots = await Promise.all(repos.map(name => locate(workspace, name, forbidden)))
-  const release = await lock(directory, repos)
-  const made: { repository: string; path: string; branch: boolean }[] = []
+  const release = await lock(root, repos)
+  const attempted: { repository: string; path: string; fresh: boolean; createdBranch: boolean }[] = []
   try {
     const result: CheckedOut[] = []
     for (const [index, name] of repos.entries()) {
-      const path = join(directory, name)
-      const before = existsSync(path)
-      const { branch: created } = await worktree(roots[index]!, path, branch)
-      if (!before) made.push({ repository: roots[index]!, path, branch: created })
+      const path = join(root, name)
+      const fresh = !existsSync(path)
+      const { branch: createdBranch } = await worktree(roots[index]!, path, branch)
+      attempted.push({ repository: roots[index]!, path, fresh, createdBranch })
       result.push({ name, path })
     }
     return result
   } catch (error) {
-    // Leave nothing half-made: remove the worktrees this call created through git so its metadata agrees.
-    for (const item of made.reverse()) {
+    // Leave nothing half-made: remove through git whatever this call put in the ticket directory, so no
+    // worktree metadata or branch outlives the failure and a retry starts clean.
+    for (const item of attempted.reverse()) {
+      if (!item.fresh || !existsSync(item.path)) continue
       await git(['-C', item.repository, 'worktree', 'remove', '--force', item.path]).catch(() => {})
-      await git(['-C', item.repository, 'worktree', 'prune']).catch(() => {})
-      if (item.branch) await git(['-C', item.repository, 'branch', '-D', branch]).catch(() => {})
+      if (item.createdBranch) await git(['-C', item.repository, 'branch', '-D', '--', branch]).catch(() => {})
     }
     throw error
   } finally { await release() }
