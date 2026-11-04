@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
@@ -84,5 +84,44 @@ describe('worktrees', () => {
     await workspaceWith(['console'])
     await expect(checkout(request(['console', 'missing']))).rejects.toMatchObject({ code: 'missing' })
     expect(existsSync(join(ticketDir, 'console'))).toBe(false)
+  })
+})
+
+describe('reuse and failure', () => {
+  it('accepts uppercase repository names and checks each name out once', async () => {
+    await workspaceWith(['Console'])
+    await expect(checkout(request(['Console', 'Console']))).resolves.toEqual([{ name: 'Console', path: join(ticketDir, 'Console') }])
+  })
+  it('does not reuse a directory that is a different repository on the same branch', async () => {
+    await workspaceWith(['console'])
+    const stranger = join(ticketDir, 'console')
+    mkdirSync(stranger)
+    await exec('git', ['init', '-q', stranger], { env: gitEnv() })
+    await exec('git', ['-C', stranger, 'commit', '-q', '--allow-empty', '-m', 'init'], { env: gitEnv() })
+    await exec('git', ['-C', stranger, 'checkout', '-q', '-b', 'agent/brave-otter'], { env: gitEnv() })
+    await expect(checkout(request(['console']))).rejects.toMatchObject({ code: 'gitFailed' })
+  })
+  it('takes over a lock whose process is gone', async () => {
+    await workspaceWith(['console'])
+    mkdirSync(join(ticketDir, '.checkout'), { recursive: true })
+    writeFileSync(join(ticketDir, '.checkout', 'console.lock'), '999999')
+    await expect(checkout(request(['console']))).resolves.toHaveLength(1)
+  })
+  it('fails closed when the protected list cannot be read', async () => {
+    await workspaceWith(['console'])
+    const file = join(workspace, '.dsh-protected')
+    writeFileSync(file, 'platform\n')
+    chmodSync(file, 0o000)
+    await expect(checkout(request(['console']))).rejects.toMatchObject({ code: 'protected' })
+    chmodSync(file, 0o644)
+  })
+  it('removes the worktrees it created when a later repository fails, and succeeds on a retry', async () => {
+    await workspaceWith(['console', 'backend'])
+    mkdirSync(join(ticketDir, 'backend'))
+    writeFileSync(join(ticketDir, 'backend', 'in-the-way'), 'x')
+    await expect(checkout(request(['console', 'backend']))).rejects.toMatchObject({ code: 'gitFailed' })
+    expect(existsSync(join(ticketDir, 'console', '.git'))).toBe(false)
+    rmSync(join(ticketDir, 'backend'), { recursive: true, force: true })
+    await expect(checkout(request(['console', 'backend']))).resolves.toHaveLength(2)
   })
 })
