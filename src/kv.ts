@@ -54,6 +54,7 @@ export const KV = {
     comment: family<string, [issue: string]>('jira-comment:') },
   /** GitLab Source: whether a ticket already follows a merge request, and the note id it read up to. */
   gitlab: { bound: family<boolean, [ticket: string, thread: string]>('gitlab-bound:'),
+    closed: family<boolean, [ticket: string, thread: string]>('gitlab-closed:'),
     note: family<number, [thread: string]>('gitlab-note:') },
   /**
    * Feishu Source: known chats (`true` for direct messages); per-chat history cursor and active topics mapped from topic ID
