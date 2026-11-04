@@ -97,6 +97,8 @@ export class SourceRegistry implements SourceScope {
     if (!kind) return 'waiting'
     if (!kind.channel) return 'gone'
     const instance = this.resolve(kind, this.settings().sources[message.channel.source])
+    // A Source that is off cannot speak; its queued replies wait for it to come back instead of being dropped.
+    if (!instance.enabled) return 'waiting'
     return kind.channel.send({ commands }, message, instance.config)
   }
   link(channel: ChannelRef, links: ChannelLinks): ChannelLink {

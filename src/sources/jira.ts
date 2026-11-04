@@ -68,6 +68,10 @@ const run = (ctx: SourceContext, config: JiraConfig, env: Record<string, string>
 
 /** Parses CLI output, or undefined when it is not JSON (a failure the caller treats as incomplete). */
 const jsonOf = (text: string): unknown => { try { return JSON.parse(text) } catch { return undefined } }
+/** Message ids this process has already posted, by issue; the marker in the body covers a restart. */
+const sentTo = new Map<string, Set<string>>()
+/** Replies in flight, so two attempts at the same message cannot both pass the check. */
+const sending = new Set<string>()
 const page = 100
 /** Reads every page of the query; a short page ends it, and any failure makes the round incomplete. */
 async function readIssues(ctx: SourceContext, config: JiraConfig, env: Record<string, string>, project: string): Promise<{ issues: JiraIssue[]; complete: boolean }> {
@@ -196,24 +200,39 @@ export const jiraKind: SourceKind<JiraConfig> = {
   health: ['jira'],
   scope: () => ({ listened: true, observed: false }),
   channel: {
-    // A reply is a comment on the issue. The marker in the body makes a retry idempotent: the comment is
-    // looked for before another one is posted, so a timed-out call cannot leave two.
+    // A reply is a comment on the issue. Two things keep a retry from posting twice: the message ids this
+    // process already sent, and a marker in the body. A check that cannot run refuses to post rather than
+    // guessing, because a duplicate comment is worse than a retry.
     send: async (host, message, config) => {
       const issue = String(message.channel.address.issue ?? '')
-      if (!issue) return 'gone'
-      const env = await credentials(config)
-      const marker = `dsh-superagent:${message.id}`
-      const comments = await host.commands.runWith(config.cli, ['issue', 'view', issue, '--comments', String(config.commentLookback), '--raw'], env)
-        .then(jsonOf, () => undefined)
-        .then(value => CommentBodies.safeParse(value))
-      if (comments.success && comments.data.fields.comment.comments.some(comment => (comment.body ?? '').includes(marker))) return 'sent'
-      const body = `${message.text}\n\n<sub>${marker}</sub>`
-      try { await host.commands.runWith(config.cli, ['issue', 'comment', 'add', issue, body, '--no-input'], env) }
-      catch (error) {
-        if (/\b404\b|not found/i.test(String(error))) return 'gone'
-        throw error
-      }
-      return 'sent'
+      // A key that is not a Jira key cannot be a reply target; treat it as gone rather than passing it to the CLI.
+      if (!/^[A-Z][A-Z0-9_]*-\d+$/.test(issue)) return 'gone'
+      const token = `dsh-superagent:${message.id}`
+      const marker = `<sub>${token}</sub>`
+      const sent = sentTo.get(issue)
+      if (sent?.has(message.id)) return 'sent'
+      if (sending.has(`${issue}\0${message.id}`)) throw new Error(`${issue} is already being answered`)
+      sending.add(`${issue}\0${message.id}`)
+      try {
+        const env = await credentials(config)
+        const comments = await host.commands.runWith(config.cli, ['issue', 'view', issue, '--comments', String(config.commentLookback), '--raw'], env)
+          .then(jsonOf)
+          .then(value => CommentBodies.safeParse(value))
+        // Without a readable list there is no way to know whether the comment exists, so leave it to the retry.
+        if (!comments.success) throw new Error(`the comments of ${issue} could not be read, so the reply was not posted`)
+        if (comments.data.fields.comment.comments.some(comment => (comment.body ?? '').includes(marker))) {
+          sentTo.get(issue)?.add(message.id) ?? sentTo.set(issue, new Set([message.id]))
+          return 'sent'
+        }
+        try { await host.commands.runWith(config.cli, ['issue', 'comment', 'add', issue, `${message.text}\n\n${marker}`, '--no-input'], env) }
+        catch (error) {
+          // Only the Jira API reporting the issue missing means the target is gone; any other failure may pass.
+          if (/unexpected response '40[34]'/i.test(String(error))) return 'gone'
+          throw error
+        }
+        sentTo.get(issue)?.add(message.id) ?? sentTo.set(issue, new Set([message.id]))
+        return 'sent'
+      } finally { sending.delete(`${issue}\0${message.id}`) }
     },
     link: address => ({ url: String(address.url ?? ''), label: { zh: 'Jira', en: 'Jira' } }),
   },
