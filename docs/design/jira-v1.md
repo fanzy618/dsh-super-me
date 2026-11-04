@@ -386,6 +386,23 @@ glab mr create --no-editor --title "<summary>" --description "<说明 + Closes K
 | TC-E3 | AC-6 | 模糊 issue → Jira 追问 → 人工回答 → 继续 |
 | TC-E4 | AC-1/18 | 空窗 10 分钟 → 新 sprint → 无重放；自评论不成环 |
 
+## 12.1 验收标准与测试的对应
+
+每条验收标准必须指向至少一个测试；没有对应测试的 AC 就是缺口。
+
+| AC | 测试 |
+| --- | --- |
+| AC-2 新 issue 建单、同指纹不重复 | `tests/jira.spec.ts`、`tests/jira-poll.spec.ts` |
+| AC-3 更新扇出 | `tests/jira-poll.spec.ts`（changed issue） |
+| AC-11 幂等 | `tests/jira.spec.ts`、`tests/jira-poll.spec.ts` |
+| AC-13 限流不丢单 | `tests/jira.spec.ts`（spreads dispatch） |
+| AC-16 评论入 Input、自身评论不触发 | `tests/jira-poll.spec.ts`、`tests/jira-edges.spec.ts` |
+| AC-19 翻页完整、不误判离开 | `tests/jira-edges.spec.ts`（full first page；later page fails） |
+| AC-7 多仓执行 | `tests/checkout.spec.ts` |
+| AC-14 checkout 记录 | `tests/checkout-tool.spec.ts` |
+| AC-15 checkout 边界 | `tests/checkout.spec.ts`（names、symlink、escape、protected） |
+| AC-21 并发 checkout | `tests/checkout.spec.ts`（busy lock） |
+
 ## 13. 里程碑
 
 | 里程碑 | 内容 | 判据 |

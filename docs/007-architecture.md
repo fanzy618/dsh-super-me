@@ -416,6 +416,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/checkout-tool.spec.ts` | `orchestrator_checkout` on a running runtime: the paths it returns and what it records on the ticket |
 | `tests/jira.spec.ts` | Jira fingerprints, Trigger mapping and round planning |
 | `tests/jira-poll.spec.ts` | One Jira polling round against a CLI stand-in: dispatch once, comments, changes |
+| `tests/jira-edges.spec.ts` | Pagination, incomplete rounds, the departure matrix, comment failures, ownership and the shared budget |
 | `tests/commands.spec.ts` | CLI calls as the deployment's accounts, the Channels' answers, and repository-scoped GitHub calls |
 | `tests/feishu-read.spec.ts`, `tests/github-read.spec.ts` | Feishu and GitHub reads |
 | `tests/admission-context.spec.ts`, `tests/feishu-image.spec.ts` | The Thread window of assessments, and Feishu image reads |

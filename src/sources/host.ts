@@ -18,6 +18,7 @@ export const HEALTH_TEXT = {
   jiraAuthFailed: 'The jira CLI cannot read its account',
   jiraPollIncomplete: 'A polling round could not read every page, so nothing changed',
   jiraNoProjects: 'The Jira Source names no project',
+  jiraCommentsUnreadable: 'A comment could not be read, so the cursor did not move',
   jiraCommentsTruncated: 'More comments than one read returns were waiting; the cursor did not move, so raise the comment lookback',
   pollFailures: '{count} consecutive failed polls; last: {error}',
 } as const

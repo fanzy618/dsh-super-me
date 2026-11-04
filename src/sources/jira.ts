@@ -72,7 +72,8 @@ const page = 100
 async function readIssues(ctx: SourceContext, config: JiraConfig, env: Record<string, string>, project: string): Promise<{ issues: JiraIssue[]; complete: boolean }> {
   const issues: JiraIssue[] = []
   for (let from = 0; from < page * 50; from += page) {
-    const result = await run(ctx, config, env, ['issue', 'list', '-p', project, '-q', config.jql, '--raw', '--paginate', `${from}:${page}`])
+    const result = await run(ctx, config, env, ['issue', 'list', '-p', project, '-q', config.jql, '--raw', '--paginate', `${from}:${page}`]).catch(() => undefined)
+    if (result === undefined) return { issues, complete: false }
     const raw = z.array(z.unknown()).safeParse(jsonOf(result))
     if (!raw.success) return { issues, complete: false }
     // Completeness is the size of the page the CLI returned, not the number of records that parsed: a
@@ -134,7 +135,7 @@ export async function pollRound(ctx: SourceContext): Promise<boolean> {
     await ctx.receive(issueTrigger(issue))
     ctx.threads.describe(jiraThread(issue.key), { label: `${issue.key} ${issue.summary}`, url: issue.url })
   }
-  ctx.atomic(() => { ctx.state.set(KV.jira.seen, result.seen); ctx.state.set(KV.jira.pending, result.pending) })
+  if (complete) ctx.atomic(() => { ctx.state.set(KV.jira.seen, result.seen); ctx.state.set(KV.jira.pending, result.pending) })
   if (!complete) { ctx.report('jira', health('error', 'jiraPollIncomplete')); return false }
   // Comments: the issues just dispatched, and every issue an open ticket already works on.
   const watched = new Set(result.dispatch.map(issue => issue.key))
@@ -149,7 +150,7 @@ export async function pollRound(ctx: SourceContext): Promise<boolean> {
     if (!issue) continue
     const cursor = ctx.state.get(KV.jira.comment(issueKey))
     const read = await readComments(ctx, config, env, issue, cursor ?? '0').catch(() => ({ comments: [] as JiraComment[], complete: false }))
-    if (!read.complete) { warning = health('error', 'jiraCommentsTruncated'); continue }
+    if (!read.complete) { warning = health('error', 'jiraCommentsUnreadable'); continue }
     // The first read records where the issue stands instead of replaying its history at the new ticket.
     if (cursor === undefined) { ctx.state.set(KV.jira.comment(issueKey), read.comments.at(-1)?.id ?? '0'); if (read.comments.length >= config.commentLookback) warning = health('error', 'jiraCommentsTruncated'); continue }
     // A full window means older comments we cannot see; moving the cursor would skip them for good.
