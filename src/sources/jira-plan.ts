@@ -46,6 +46,8 @@ export function plan(input: PlanInput): PlanResult {
     // A queued issue that one round does not return stays queued: only a confirmed departure removes it.
     if (!issue) { rest.push(item); continue }
     const current = fingerprint(issue)
+    // A queued issue that moved back to what was already dispatched needs nothing.
+    if (next[issue.key]?.fingerprint === current) continue
     if (current !== item.fingerprint) { item.fingerprint = current; rest.push(item); continue }
     if (dispatch.length < limit) dispatch.push(issue)
     else rest.push(item)

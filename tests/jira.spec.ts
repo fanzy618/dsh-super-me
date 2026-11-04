@@ -72,6 +72,15 @@ describe('round planning', () => {
     const second = plan({ ...none, issues: [issue()], seen: first.seen, pending: first.pending, limit: 5 })
     expect(second.pending.map(item => item.key)).toEqual(['PROJ-2', 'PROJ-3'])
   })
+  it('drops a queued issue that moved back to what was already dispatched', () => {
+    const first = plan({ ...none, issues: [issue()] })
+    // The issue waits behind another one, then returns to the fingerprint the first round dispatched.
+    const queued = plan({ ...none, issues: [issue({ key: 'PROJ-2' }), issue({ statusId: '4' })], seen: first.seen, limit: 1 })
+    expect(queued.pending.map(item => item.key)).toEqual(['PROJ-1'])
+    const back = plan({ ...none, issues: [issue(), issue({ key: 'PROJ-2' })], seen: queued.seen, pending: queued.pending, limit: 5 })
+    expect(back.dispatch).toEqual([])
+    expect(back.pending).toEqual([])
+  })
   it('forgets an issue only when the caller confirmed it left', () => {
     const first = plan({ ...none, issues: [issue()] })
     const unconfirmed = plan({ ...none, issues: [], seen: first.seen })

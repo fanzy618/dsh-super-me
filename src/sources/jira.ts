@@ -92,12 +92,15 @@ export function departed(issue: z.infer<typeof RawIssue>, login: string): boolea
   return issue.fields.status.statusCategory?.key === 'done'
 }
 /** Reads an issue's comments after the stored cursor and returns the new ones, oldest first. */
-async function readComments(ctx: SourceContext, config: JiraConfig, env: Record<string, string>, issue: JiraIssue, cursor: string): Promise<JiraComment[]> {
+async function readComments(ctx: SourceContext, config: JiraConfig, env: Record<string, string>, issue: JiraIssue, cursor: string): Promise<{ comments: JiraComment[]; complete: boolean }> {
   const result = await run(ctx, config, env, ['issue', 'view', issue.key, '--comments', String(config.commentLookback), '--raw']).then(jsonOf, () => undefined)
   const raw = z.looseObject({ fields: z.looseObject({ comment: z.looseObject({ comments: z.array(z.unknown()).default([]) }) }) }).safeParse(result)
-  if (!raw.success) return []
-  const comments = raw.data.fields.comment.comments.map(item => RawComment.safeParse(item)).filter(item => item.success).map(item => parseComment(item.data))
-  return comments.filter(item => Number(item.id) > Number(cursor)).sort((a, b) => Number(a.id) - Number(b.id))
+  if (!raw.success) return { comments: [], complete: false }
+  const parsed = raw.data.fields.comment.comments.map(item => RawComment.safeParse(item))
+  if (parsed.some(item => !item.success)) return { comments: [], complete: false }
+  const comments = parsed.flatMap(item => item.success ? [parseComment(item.data)] : [])
+    .filter(item => Number(item.id) > Number(cursor)).sort((a, b) => Number(a.id) - Number(b.id))
+  return { comments, complete: true }
 }
 
 /** Runs one polling round; returns false when the round was incomplete and changed nothing. */
@@ -120,7 +123,8 @@ export async function pollRound(ctx: SourceContext): Promise<boolean> {
   // Departures are confirmed one by one; an unconfirmed key stays, so a short list never forgets an issue.
   const present = new Set(issues.map(issue => issue.key))
   const left: string[] = []
-  if (complete) for (const key of Object.keys(seen)) {
+  const tracked = new Set([...Object.keys(seen), ...pending.map(item => item.key)])
+  if (complete) for (const key of tracked) {
     if (present.has(key)) continue
     const raw = await run(ctx, config, env, ['issue', 'view', key, '--raw']).then(value => RawIssue.safeParse(jsonOf(value)), () => ({ success: false } as const))
     if (raw.success && departed(raw.data, login)) left.push(key)
@@ -136,21 +140,28 @@ export async function pollRound(ctx: SourceContext): Promise<boolean> {
   const watched = new Set(result.dispatch.map(issue => issue.key))
   for (const ticket of ctx.tickets.open()) for (const channel of ticket.channels) if (channel.source === SOURCE) watched.add(String(channel.address.issue ?? ''))
   const byKey = new Map(issues.map(issue => [issue.key, issue]))
+  // Comments share the round's budget with issues: a burst of replies must not flood an evaluation either.
+  let budget = config.maxTriggersPerRound - result.dispatch.length
+  let warning: ReturnType<typeof health> | undefined
   for (const issueKey of watched) {
+    if (budget <= 0) break
     const issue = byKey.get(issueKey)
     if (!issue) continue
     const cursor = ctx.state.get(KV.jira.comment(issueKey))
-    const comments = await readComments(ctx, config, env, issue, cursor ?? '0').catch(() => [] as JiraComment[])
-    // The first read records where the issue stands instead of replaying its history at the ticket.
-    if (cursor === undefined) { const newest = comments.at(-1)?.id; if (newest) ctx.state.set(KV.jira.comment(issueKey), newest); continue }
+    const read = await readComments(ctx, config, env, issue, cursor ?? '0').catch(() => ({ comments: [] as JiraComment[], complete: false }))
+    if (!read.complete) { warning = health('error', 'jiraCommentsTruncated'); continue }
+    // The first read records where the issue stands instead of replaying its history at the new ticket.
+    if (cursor === undefined) { ctx.state.set(KV.jira.comment(issueKey), read.comments.at(-1)?.id ?? '0'); if (read.comments.length >= config.commentLookback) warning = health('error', 'jiraCommentsTruncated'); continue }
     // A full window means older comments we cannot see; moving the cursor would skip them for good.
-    if (comments.length >= config.commentLookback) { ctx.report('jira', health('error', 'jiraCommentsTruncated')); continue }
-    const fresh = comments.filter(comment => comment.author && comment.author !== login)
-    if (!fresh.length) { const newest = comments.at(-1)?.id; if (newest) ctx.state.set(KV.jira.comment(issueKey), newest); continue }
+    if (read.comments.length >= config.commentLookback) { warning = health('error', 'jiraCommentsTruncated'); continue }
+    const fresh = read.comments.filter(comment => comment.author && comment.author !== login).slice(0, budget)
+    if (!fresh.length) { ctx.state.set(KV.jira.comment(issueKey), read.comments.at(-1)?.id ?? cursor); continue }
     for (const comment of fresh) await ctx.receive(commentTrigger(issue, comment))
-    ctx.state.set(KV.jira.comment(issueKey), comments.at(-1)!.id)
+    budget -= fresh.length
+    ctx.state.set(KV.jira.comment(issueKey), fresh.at(-1)!.id)
   }
-  ctx.report('jira', { state: 'ready', detail: `${issues.length} issues; ${result.pending.length} queued`, at: new Date().toISOString() })
+  if (warning) ctx.report('jira', warning)
+  else ctx.report('jira', { state: 'ready', detail: `${issues.length} issues; ${result.pending.length} queued`, at: new Date().toISOString() })
   return true
 }
 

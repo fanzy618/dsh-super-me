@@ -16,12 +16,12 @@ const raw = (key: string, statusId = '3', assignee = 'alice') => ({ key, self: `
   fields: { summary: `Fix ${key}`, description: 'body', updated: '2026-01-01T00:00:00.000+0000', status: { id: statusId },
     assignee: assignee ? { name: assignee } : null, components: [], labels: [] } })
 
-const context = (run: (program: string, args: string[]) => Promise<string>, tickets: unknown[] = []) => {
+const context = (run: (program: string, args: string[]) => Promise<string>, tickets: unknown[] = [], overrides: Record<string, unknown> = {}) => {
   const received: Trigger[] = []
   const state = new Map<string, unknown>()
   const ctx = {
     config: () => ({ cli: 'jira', envFile: '', baseUrl: 'https://jira.example',
-      projects: ['PROJ'], jql: 'assignee = currentUser()', pollSeconds: 300, maxTriggersPerRound: 20, commentLookback: 50 }),
+      projects: ['PROJ'], jql: 'assignee = currentUser()', pollSeconds: 300, maxTriggersPerRound: 20, commentLookback: 50, ...overrides }),
     commands: { runWith: (program: string, args: string[]) => run(program, args) },
     receive: async (trigger: Trigger) => { received.push(trigger) },
     state: { get: (key: string) => state.get(key), set: (key: string, value: unknown) => { if (value === undefined) state.delete(key); else state.set(key, value) } },
@@ -79,4 +79,26 @@ describe('a polling round', () => {
     await pollRound(ctx)
     expect(received).toHaveLength(2)
   })
+})
+
+it('reads the first comment that arrives after a round with none', async () => {
+  let comments: unknown[] = []
+  const ticket = { channels: [{ source: 'jira', thread: 'jira:PROJ-1', address: { issue: 'PROJ-1' } }] }
+  const { ctx, received, state } = context(async (program, args) => cli([raw('PROJ-1')], comments)(program, args), [ticket])
+  await pollRound(ctx)
+  expect(state.get(KV.jira.comment('PROJ-1'))).toBe('0')
+  comments = [{ id: '900', body: 'first', created: '2026-01-02T00:00:00.000+0000', author: { name: 'bob' } }]
+  await pollRound(ctx)
+  expect(received.map(trigger => trigger.text)).toContain('first')
+})
+
+it('shares the round budget between issues and comments', async () => {
+  const comments = [{ id: '900', body: 'a', created: '2026-01-02T00:00:00.000+0000', author: { name: 'bob' } }]
+  const ticket = { channels: [{ source: 'jira', thread: 'jira:PROJ-1', address: { issue: 'PROJ-1' } }] }
+  const { ctx, received, state } = context(async (program, args) => cli([raw('PROJ-1')], comments)(program, args), [ticket], { maxTriggersPerRound: 1 })
+  await pollRound(ctx)
+  await pollRound(ctx)
+  // The one dispatch of the second round used the whole budget, so the comment waits.
+  expect(received.filter(trigger => trigger.meta.commentId)).toHaveLength(0)
+  expect(state.get(KV.jira.comment('PROJ-1'))).toBe('900')
 })
