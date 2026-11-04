@@ -17,6 +17,8 @@ export const HEALTH_TEXT = {
   jiraCliUnset: 'The Source is on, and its jira CLI is not set',
   jiraAuthFailed: 'The jira CLI cannot read its account',
   jiraPollIncomplete: 'A polling round could not read every page, so nothing changed',
+  jiraNoProjects: 'The Jira Source names no project',
+  jiraCommentsTruncated: 'More comments than one read returns were waiting; the cursor did not move, so raise the comment lookback',
   pollFailures: '{count} consecutive failed polls; last: {error}',
 } as const
 export type HealthCode = keyof typeof HEALTH_TEXT

@@ -22,7 +22,7 @@ export const jiraChannel = (issue: string): ChannelRef => ({ source: SOURCE, thr
 /** The fields a ticket is about, in a stable order; `updated` is deliberately absent. */
 export const fingerprint = (issue: Pick<JiraIssue, 'summary' | 'description' | 'statusId' | 'assignee' | 'components' | 'labels'>): string =>
   key('jira-fingerprint', issue.summary, issue.description ?? '', issue.statusId, issue.assignee ?? '',
-    [...issue.components].sort().join(','), [...issue.labels].sort().join(','))
+    JSON.stringify([...issue.components].sort()), JSON.stringify([...issue.labels].sort()))
 const body = (text: string | undefined): string => (text ?? '').slice(0, 8000)
 
 /** Builds the trigger for an issue: an assigned issue is a direct request, so it needs no mention. */

@@ -43,8 +43,10 @@ export function plan(input: PlanInput): PlanResult {
   const rest: PendingEntry[] = []
   for (const item of queue) {
     const issue = byKey.get(item.key)
-    // An issue that left while it waited is dropped from the queue, not dispatched.
-    if (!issue || fingerprint(issue) !== item.fingerprint) continue
+    // A queued issue that one round does not return stays queued: only a confirmed departure removes it.
+    if (!issue) { rest.push(item); continue }
+    const current = fingerprint(issue)
+    if (current !== item.fingerprint) { item.fingerprint = current; rest.push(item); continue }
     if (dispatch.length < limit) dispatch.push(issue)
     else rest.push(item)
   }

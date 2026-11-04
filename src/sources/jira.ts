@@ -14,7 +14,7 @@ const Z = z.object({
   cli: z.string().trim().default('jira'),
   envFile: z.string().trim().default(''),
   baseUrl: z.string().trim().default(''),
-  projects: z.array(z.string().regex(/^[A-Z][A-Z0-9_]*$/)).min(1).default(['PROJ']),
+  projects: z.array(z.string().regex(/^[A-Z][A-Z0-9_]*$/)).default([]),
   jql: z.string().trim().min(1).default('assignee = currentUser() AND sprint in openSprints() AND statusCategory != Done'),
   pollSeconds: z.number().int().min(60).max(3600).default(300),
   maxTriggersPerRound: z.number().int().min(1).max(100).default(20),
@@ -30,7 +30,7 @@ const RawIssue = z.looseObject({
     summary: z.string(),
     description: z.string().nullish(),
     updated: z.string(),
-    status: z.looseObject({ id: z.string() }),
+    status: z.looseObject({ id: z.string(), statusCategory: z.looseObject({ key: z.string() }).nullish() }),
     assignee: z.looseObject({ name: z.string() }).nullish(),
     components: z.array(z.looseObject({ name: z.string() })).default([]),
     labels: z.array(z.string()).default([]),
@@ -60,7 +60,7 @@ export async function credentials(config: JiraConfig): Promise<Record<string, st
       const at = line.indexOf('=')
       return at < 0 ? [line, ''] : [line.slice(0, at).trim(), line.slice(at + 1).trim().replace(/^["']|["']$/g, '')]
     }))
-  } catch { return {} }
+  } catch (error) { throw new Error(`The Jira credential file ${config.envFile} cannot be read: ${error instanceof Error ? error.message : String(error)}`) }
 }
 const run = (ctx: SourceContext, config: JiraConfig, env: Record<string, string>, args: string[]): Promise<string> =>
   ctx.commands.runWith(config.cli, args, env)
@@ -71,19 +71,25 @@ const page = 100
 /** Reads every page of the query; a short page ends it, and any failure makes the round incomplete. */
 async function readIssues(ctx: SourceContext, config: JiraConfig, env: Record<string, string>, project: string): Promise<{ issues: JiraIssue[]; complete: boolean }> {
   const issues: JiraIssue[] = []
-  for (let from = 0; ; from += page) {
+  for (let from = 0; from < page * 50; from += page) {
     const result = await run(ctx, config, env, ['issue', 'list', '-p', project, '-q', config.jql, '--raw', '--paginate', `${from}:${page}`])
     const raw = z.array(z.unknown()).safeParse(jsonOf(result))
     if (!raw.success) return { issues, complete: false }
-    const parsed = raw.data.map(item => RawIssue.safeParse(item)).filter(item => item.success).map(item => item.data)
-    issues.push(...parsed.map(item => parseIssue(item, config.baseUrl)))
-    if (parsed.length < page) return { issues, complete: true }
+    // Completeness is the size of the page the CLI returned, not the number of records that parsed: a
+    // record this build cannot read must not look like the end of the query.
+    const items = raw.data
+    const parsed = items.map(item => RawIssue.safeParse(item))
+    if (parsed.some(item => !item.success)) return { issues, complete: false }
+    issues.push(...parsed.flatMap(item => item.success ? [parseIssue(item.data, config.baseUrl)] : []))
+    if (items.length < page) return { issues, complete: true }
   }
+  return { issues, complete: false }
 }
 /** True when the issue left the query for a reason the Source can confirm: it is done, or no longer assigned to the operator. */
-/** True when the issue left the query for a reason the Source can confirm: it is no longer assigned to the operator. */
-function departed(issue: z.infer<typeof RawIssue>, login: string): boolean {
-  return (issue.fields.assignee?.name ?? '') !== login
+/** True when the issue left the query for a reason the Source can confirm: done, or no longer assigned to the operator. */
+export function departed(issue: z.infer<typeof RawIssue>, login: string): boolean {
+  if ((issue.fields.assignee?.name ?? '') !== login) return true
+  return issue.fields.status.statusCategory?.key === 'done'
 }
 /** Reads an issue's comments after the stored cursor and returns the new ones, oldest first. */
 async function readComments(ctx: SourceContext, config: JiraConfig, env: Record<string, string>, issue: JiraIssue, cursor: string): Promise<JiraComment[]> {
@@ -98,6 +104,7 @@ async function readComments(ctx: SourceContext, config: JiraConfig, env: Record<
 export async function pollRound(ctx: SourceContext): Promise<boolean> {
   const config = ctx.config<JiraConfig>(SOURCE)
   if (!config) { ctx.report('jira', health('paused', 'sourceOff')); return true }
+  if (!config.projects.length) { ctx.report('jira', health('paused', 'jiraNoProjects')); return true }
   const env = await credentials(config)
   const login = await ctx.commands.runWith(config.cli, ['me'], env).then((value: string) => value.trim(), () => '')
   if (!login) { ctx.report('jira', health('error', 'jiraAuthFailed')); return true }
@@ -132,10 +139,15 @@ export async function pollRound(ctx: SourceContext): Promise<boolean> {
   for (const issueKey of watched) {
     const issue = byKey.get(issueKey)
     if (!issue) continue
-    const cursor = ctx.state.get(KV.jira.comment(issueKey)) ?? '0'
-    const comments = await readComments(ctx, config, env, issue, cursor).catch(() => [] as JiraComment[])
-    if (!comments.length) continue
-    for (const comment of comments) await ctx.receive(commentTrigger(issue, comment))
+    const cursor = ctx.state.get(KV.jira.comment(issueKey))
+    const comments = await readComments(ctx, config, env, issue, cursor ?? '0').catch(() => [] as JiraComment[])
+    // The first read records where the issue stands instead of replaying its history at the ticket.
+    if (cursor === undefined) { const newest = comments.at(-1)?.id; if (newest) ctx.state.set(KV.jira.comment(issueKey), newest); continue }
+    // A full window means older comments we cannot see; moving the cursor would skip them for good.
+    if (comments.length >= config.commentLookback) { ctx.report('jira', health('error', 'jiraCommentsTruncated')); continue }
+    const fresh = comments.filter(comment => comment.author && comment.author !== login)
+    if (!fresh.length) { const newest = comments.at(-1)?.id; if (newest) ctx.state.set(KV.jira.comment(issueKey), newest); continue }
+    for (const comment of fresh) await ctx.receive(commentTrigger(issue, comment))
     ctx.state.set(KV.jira.comment(issueKey), comments.at(-1)!.id)
   }
   ctx.report('jira', { state: 'ready', detail: `${issues.length} issues; ${result.pending.length} queued`, at: new Date().toISOString() })
@@ -148,7 +160,7 @@ async function watch(ctx: SourceContext, signal: AbortSignal): Promise<void> {
   if (!ctx.configured()) { ctx.report('jira', health('paused', 'setupPending')); return }
   if (!ctx.config<JiraConfig>(SOURCE)?.cli) { ctx.report('jira', health('paused', 'jiraCliUnset')); return }
   while (!signal.aborted) {
-    try { await pollRound(ctx); failures = 0 }
+    try { failures = await pollRound(ctx) ? 0 : failures + 1 }
     catch (error) { failures += 1; if (failures >= 3 && !signal.aborted) ctx.report('jira', { state: 'error', detail: String(error) }) }
     await pause((ctx.config<JiraConfig>(SOURCE)?.pollSeconds ?? 300) * 1000, signal)
   }

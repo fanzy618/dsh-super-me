@@ -66,6 +66,12 @@ describe('round planning', () => {
     expect(second.dispatch.map(item => item.key)).toEqual(['PROJ-3'])
     expect(second.pending).toEqual([])
   })
+  it('keeps a queued issue that one round does not return', () => {
+    const issues = [issue(), issue({ key: 'PROJ-2' }), issue({ key: 'PROJ-3' })]
+    const first = plan({ ...none, issues, limit: 1 })
+    const second = plan({ ...none, issues: [issue()], seen: first.seen, pending: first.pending, limit: 5 })
+    expect(second.pending.map(item => item.key)).toEqual(['PROJ-2', 'PROJ-3'])
+  })
   it('forgets an issue only when the caller confirmed it left', () => {
     const first = plan({ ...none, issues: [issue()] })
     const unconfirmed = plan({ ...none, issues: [], seen: first.seen })
