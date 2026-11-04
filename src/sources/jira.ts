@@ -36,6 +36,7 @@ const RawIssue = z.looseObject({
     labels: z.array(z.string()).default([]),
   }),
 })
+const CommentBodies = z.looseObject({ fields: z.looseObject({ comment: z.looseObject({ comments: z.array(z.looseObject({ body: z.string().nullish() })).default([]) }) }) })
 const RawComment = z.looseObject({ id: z.string(), body: z.string().nullish(), created: z.string(),
   author: z.looseObject({ name: z.string() }).nullish() })
 
@@ -195,8 +196,26 @@ export const jiraKind: SourceKind<JiraConfig> = {
   health: ['jira'],
   scope: () => ({ listened: true, observed: false }),
   channel: {
-    send: async () => 'gone',
-    link: address => ({ url: '', label: { zh: 'Jira', en: 'Jira' } }),
+    // A reply is a comment on the issue. The marker in the body makes a retry idempotent: the comment is
+    // looked for before another one is posted, so a timed-out call cannot leave two.
+    send: async (host, message, config) => {
+      const issue = String(message.channel.address.issue ?? '')
+      if (!issue) return 'gone'
+      const env = await credentials(config)
+      const marker = `dsh-superagent:${message.id}`
+      const comments = await host.commands.runWith(config.cli, ['issue', 'view', issue, '--comments', String(config.commentLookback), '--raw'], env)
+        .then(jsonOf, () => undefined)
+        .then(value => CommentBodies.safeParse(value))
+      if (comments.success && comments.data.fields.comment.comments.some(comment => (comment.body ?? '').includes(marker))) return 'sent'
+      const body = `${message.text}\n\n<sub>${marker}</sub>`
+      try { await host.commands.runWith(config.cli, ['issue', 'comment', 'add', issue, body, '--no-input'], env) }
+      catch (error) {
+        if (/\b404\b|not found/i.test(String(error))) return 'gone'
+        throw error
+      }
+      return 'sent'
+    },
+    link: address => ({ url: String(address.url ?? ''), label: { zh: 'Jira', en: 'Jira' } }),
   },
   find: query => ({ threads: /^[A-Z][A-Z0-9_]*-\d+$/.test(query.trim()) ? [jiraThread(query.trim())] : [], terms: [] }),
   policy: {
