@@ -125,6 +125,10 @@ export class SourceRegistry implements SourceScope {
       },
     }
   }
+  intake(source: string): boolean {
+    // A Source whose plugin is missing cannot start work; its stored Triggers would otherwise queue for Eval.
+    return this.kinds.get(source)?.intake !== false
+  }
   scope(input: { source: string; meta: Record<string, unknown> }, settings = this.settings()): ScopeResult {
     const kind = this.kinds.get(input.source)
     const stored = settings.sources[input.source]

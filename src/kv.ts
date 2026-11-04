@@ -52,6 +52,9 @@ export const KV = {
   /** Jira Source: what the last round recorded per issue, the queue waiting for a dispatch slot, and each issue's comment cursor. */
   jira: { seen: record<Record<string, SeenEntry>>('jira-seen'), pending: record<PendingEntry[]>('jira-pending'),
     comment: family<string, [issue: string]>('jira-comment:') },
+  /** GitLab Source: whether a ticket already follows a merge request, and the note id it read up to. */
+  gitlab: { bound: family<boolean, [ticket: string, thread: string]>('gitlab-bound:'),
+    note: family<number, [thread: string]>('gitlab-note:') },
   /**
    * Feishu Source: known chats (`true` for direct messages); per-chat history cursor and active topics mapped from topic ID
    * to last-seen timestamp; and per-polled-thread seen message IDs and initialization flag.

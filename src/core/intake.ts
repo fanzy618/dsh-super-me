@@ -55,7 +55,12 @@ export class Intake extends EnginePart {
     this.repo.triggers.saveDisposition(trigger.id, disposition)
     // A person's message that no ticket decides, such as one that reached only tickets a person stopped or that follow the
     // Thread for context, and every bot's, goes to Eval.
-    if (!this.owners(trigger).length) this.queueForEval(trigger)
+    // A Source that only watches (such as a merge request's discussion) never starts work: its Trigger
+    // reaches the tickets subscribed to the Thread and stops there.
+    if (!this.owners(trigger).length) {
+      if (this.options.scope.intake(trigger.source)) this.queueForEval(trigger)
+      else this.repo.triggers.saveDisposition(trigger.id, { ...disposition, watched: true })
+    }
     for (const ticketId of fanout) this.tickets.wake(ticketId)
     this.emit('trigger.received', { triggerId: trigger.id, threads: trigger.threads.map(threadKey) })
     return 'stored'

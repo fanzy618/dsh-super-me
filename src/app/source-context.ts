@@ -61,6 +61,17 @@ export function sourceContextOf(deps: SourceContextDeps, kind: { kind: string; h
       open: () => store.tickets.open(),
       bindThread: (id, thread, own) => { deps.engine.bindThread(id, thread, own) },
       threadClosed: (thread, outcome, at) => { deps.engine.threadClosed(thread, outcome, at) },
+      record: (id, item) => {
+        store.atomic(() => {
+          const ticket = store.tickets.get(id)
+          if (!ticket || ticket.ended) return
+          const items = [...ticket.deliverables ?? []]
+          const at = items.findIndex(other => other.repo === item.repo)
+          if (at >= 0) items[at] = { ...items[at], ...item }
+          else items.push(item)
+          store.tickets.save({ ...ticket, repos: [...new Set([...ticket.repos ?? [], item.repo])], deliverables: items, updatedAt: new Date().toISOString() })
+        })
+      },
     },
     triggers: { get: id => store.triggers.get(id), latest: thread => store.read.threadTriggers(thread, 1)[0] },
     notify: message => { deps.outbox.send(message) },
