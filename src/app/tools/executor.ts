@@ -2,7 +2,10 @@
 import { z } from 'zod'
 import { liveTicket, type EngineForExecutor, type Ticket } from '../../core/index.ts'
 import { IM_WORDS } from '../../infra/text.ts'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { checkout } from '../../executor/checkout.ts'
+import { projectFromRemote } from '../../sources/gitlab-project.ts'
 import { claimPull, readPull } from '../../sources/github-pull.ts'
 import type { SourceContext } from '../../sources/host.ts'
 import { readResource, type ResourceHost } from '../resources.ts'
@@ -90,6 +93,15 @@ export function executorTools(host: ExecutorToolsHost, ticket: Ticket): Tool[] {
         if (!directory) throw new Error('The ticket has no directory yet; it appears once the assignment starts.')
         const name = current.execution?.name ?? current.id
         const checked = await checkout({ workspace, directory, branch: `agent/${name}`, repos: args.repos })
+        // The project a repository belongs to is what the watcher calls the API with; record it now so a
+        // merge request the worker opens later is found by its branch.
+        const projects = new Map<string, string>()
+        for (const item of checked) {
+          const remote = await promisify(execFile)('git', ['-C', item.path, 'config', '--get', 'remote.origin.url'], { timeout: 30_000 })
+            .then(result => result.stdout.trim(), () => '')
+          const project = projectFromRemote(remote)
+          if (project) projects.set(item.name, project)
+        }
         host.store.atomic(() => {
           const fresh = host.store.tickets.get(ticketId)
           if (!fresh) return

@@ -37,12 +37,30 @@ async function readNotes(ctx: SourceContext, config: GitlabConfig, name: string,
   return { notes: [], complete: false }
 }
 
+/** The open or closed merge request the branch names, newest first, when this ticket opened one. */
+async function findMr(ctx: SourceContext, config: GitlabConfig, name: string, branch: string) {
+  const raw = await ctx.commands.runWith(config.cli,
+    ['api', `${project(name)}/merge_requests?source_branch=${encodeURIComponent(branch)}&state=all&per_page=20&order_by=created_at&sort=desc`], {})
+    .then(jsonOf, () => undefined)
+  if (!Array.isArray(raw) || !raw.length) return undefined
+  const candidates = raw.map(item => parseMr({ ...item as Record<string, unknown>, project: name })).filter(mr => mr.iid > 0)
+  return candidates.sort((a, b) => b.iid - a.iid)[0]
+}
+
 /** Watches every open ticket's merge requests once, then returns. */
 export async function pollRound(ctx: SourceContext): Promise<void> {
   const config = ctx.config<GitlabConfig>(SOURCE)
   if (!config) { ctx.report('gitlab', health('paused', 'sourceOff')); return }
   let failures = 0
   for (const ticket of ctx.tickets.open()) {
+    // A merge request the worker opened itself has no ref on the ticket yet: its branch names the ticket,
+    // so the request can be found without asking the worker to report it.
+    const branch = ticket.execution?.name ? `agent/${ticket.execution.name}` : ''
+    for (const item of (ticket.deliverables ?? []).filter(item => !item.ref && item.project)) {
+      if (!branch) continue
+      const found = await findMr(ctx, config, item.project, branch)
+      if (found) ctx.tickets.record(ticket.id, { ...item, project: item.project, ref: found.iid, state: found.state })
+    }
     const items = (ticket.deliverables ?? []).filter(item => item.project && item.ref)
     for (const item of items) {
       const iid = item.ref!

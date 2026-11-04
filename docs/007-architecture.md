@@ -359,6 +359,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/sources/gitlab.ts` | The GitLab Source: one watch round over a ticket's merge requests |
 | `src/sources/gitlab-trigger.ts` | Merge requests and notes as Triggers, and the thread a request owns |
 | `src/core/deliverables.ts` | When a ticket's deliverables are all finished, and how it ended |
+| `src/sources/gitlab-project.ts` | The project path a repository's remote names |
 | `src/executor/background.ts` | A worker's background work in DeepSeek Harness, the shell jobs its Session owns (`ctx.jobs`) and its subagents (`ctx.subagents`): `runningJobs`, `untilQuiet`, `killJobs`, `collectJobs`, `stopSubagents`, `stopBackground`, `until`, and `cancelled`, the workers whose turn a stop of their subagents cancelled |
 | `src/infra/commands.ts` | `Commands`, the CLI transport: `run`; `api` and `pages`, limited to the configured repository and validated; `lark` as the bot; `git`. `CliError` carries the code a command's output reports, such as a GitHub HTTP status, and a command that prints nothing fails with how it ended, never with its arguments; `validItems` skips and counts the malformed items of a list |
 | `src/infra/environment.ts` | The agent's process environment: command shims, the git configuration and credential helper, `runAsWorker`, and the checks of the environment and of a Ticket's directory |
@@ -422,7 +423,8 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/jira-edges.spec.ts` | Pagination, incomplete rounds, the departure matrix, comment failures, ownership and the shared budget |
 | `tests/jira-channel.spec.ts` | Jira replies: the idempotent marker, a gone issue, the link, and the route through the registry |
 | `tests/gitlab.spec.ts` | Merge request and note mapping, and the deliverable summary |
-| `tests/gitlab-poll.spec.ts` | One watch round against a CLI stand-in: binding, notes, merge and close |
+| `tests/gitlab-poll.spec.ts` | One watch round against a CLI stand-in: binding, notes, merge and close, and finding a request by branch |
+| `tests/gitlab-project.spec.ts` | Project paths from ssh and https remotes |
 | `tests/commands.spec.ts` | CLI calls as the deployment's accounts, the Channels' answers, and repository-scoped GitHub calls |
 | `tests/feishu-read.spec.ts`, `tests/github-read.spec.ts` | Feishu and GitHub reads |
 | `tests/admission-context.spec.ts`, `tests/feishu-image.spec.ts` | The Thread window of assessments, and Feishu image reads |

@@ -26,7 +26,8 @@ const context = (options: { mr?: Record<string, unknown> | 'error'; notes?: unkn
     if (options.mr === 'error') throw new Error('glab: 500')
     return JSON.stringify(options.mr ?? mr())
   }
-  const ticket = { id: 't1', ended: undefined, repos: ['console'], deliverables: [{ repo: 'console', project: 'acme/console', kind: 'mr', ref: 7, state: 'open' }], ...options.ticket }
+  const ticket = { id: 't1', ended: undefined, execution: { name: 'brave-otter', directory: '/tmp/t1' }, repos: ['console'],
+    deliverables: [{ repo: 'console', project: 'acme/console', kind: 'mr', ref: 7, state: 'open' }], ...options.ticket }
   const ctx = {
     config: () => ({ cli: 'glab', pollSeconds: 120, noteLookback: 100, ...options.config }),
     commands: { runWith },
@@ -95,4 +96,30 @@ it('reports a merge request it could not read instead of pretending it is fine',
 it('finds a merge request in a nested group', async () => {
   const { gitlabKind } = await import('../src/sources/gitlab.ts')
   expect(gitlabKind.find!('acp/team/console!7').threads).toEqual(['gitlab:acp/team/console!7'])
+})
+
+it('finds a merge request the worker opened itself, by its branch', async () => {
+  const ticket = { id: 't1', ended: undefined, execution: { name: 'brave-otter', directory: '/tmp/t1' }, repos: ['console'],
+    deliverables: [{ repo: 'console', project: 'acme/console', kind: 'mr', state: 'pending' }] }
+  const received: Trigger[] = []
+  const recorded: unknown[] = []
+  const calls: string[][] = []
+  const runWith = async (_program: string, args: string[]): Promise<string> => {
+    calls.push(args)
+    if (args[1]?.includes('source_branch=')) return JSON.stringify([{ iid: 7, state: 'opened', project: 'acme/console', author: { username: 'fanzy618' } }])
+    if (args[1]?.includes('/notes')) return JSON.stringify([])
+    return JSON.stringify({ iid: 7, state: 'opened', project: 'acme/console', author: { username: 'fanzy618' } })
+  }
+  const ctx = {
+    config: () => ({ cli: 'glab', pollSeconds: 120, noteLookback: 100 }),
+    commands: { runWith },
+    receive: async (trigger: Trigger) => { received.push(trigger) },
+    state: { get: () => undefined, set: () => {} },
+    tickets: { open: () => [ticket], record: (_id: string, item: unknown) => { recorded.push(item) },
+      bindThread: () => {}, threadClosed: () => {} },
+    threads: { describe: () => {} }, report: () => {}, atomic: <T>(work: () => T): T => work(),
+  } as unknown as SourceContext
+  await pollRound(ctx)
+  expect(calls.some(call => call[1]?.includes('source_branch=agent%2Fbrave-otter'))).toBe(true)
+  expect(recorded[0]).toMatchObject({ repo: 'console', project: 'acme/console', ref: 7, state: 'open' })
 })
