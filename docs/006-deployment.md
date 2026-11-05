@@ -22,6 +22,8 @@ Both presets run with `danger-full-access` as the operator's OS user and read me
 
 - Node.js 22.19+ or 24+, pnpm, git 2.32+, Python 3.8+ and tmux
 - GitHub CLI (`gh`) 2.48 or later. Source CLI fields must point to `gh` or `lark-cli` wrappers; the host relies on their subcommands and output formats.
+- For the Jira Source: `jira` (jira-cli), signed in, with `JIRA_USERNAME` and `JIRA_API_TOKEN` in a file only its process reads.
+- For the GitLab Source: `glab`, signed in to the GitLab the repositories live on.
 - A repository on github.com; GitHub Enterprise Server is not supported. To create a checkout per Ticket, keep a local clone from which the prepare command can add worktrees. Install `git-lfs` if that repository uses Git LFS.
 - A model provider configured for DeepSeek Harness. dsh-superagent uses the profile's default model unless the Eval or Execution settings name another.
 - For Feishu: `lark-cli` (tested with 1.0.90) and a Feishu or Lark app with a bot
@@ -67,6 +69,30 @@ Both presets run with `danger-full-access` as the operator's OS user and read me
    The host refuses a CLI that can act as a user. It reads the app id, Feishu/Lark brand and bot `open_id` from the bot configuration.
 
    Both configurations share the keychain entry for the app secret. To remove only the bot configuration, delete its directory; do not run `lark-cli config remove`, which would affect the shared secret.
+
+### Jira account
+
+The Jira Source runs the `jira` CLI as the operator. Sign it in once, then put the two values its wrapper needs in a file the Source reads and nothing else does:
+
+```sh
+mkdir -p ~/.certs
+printf 'JIRA_USERNAME=%s\nJIRA_API_TOKEN=%s\n' "$USER" "$TOKEN" > ~/.certs/jira.env
+chmod 600 ~/.certs/jira.env
+jira me    # prints the account the CLI acts as
+```
+
+Set that file as the Source's **Credential file**. Its values are passed to the CLI and are never written to the database, the panel or a log. Leaving it empty uses whatever the environment already holds.
+
+### GitLab account
+
+The GitLab Source runs `glab` as the operator, and so does the worker that opens the merge request. Sign it in once:
+
+```sh
+glab auth login --hostname <gitlab host>
+glab auth status
+```
+
+The plugin never reads or copies that token; it relies on `glab` finding its own configuration.
 
 ## Install
 
@@ -144,6 +170,7 @@ Check dsh-superagent: run `scripts/dsh-superagent --profile superagent status` i
 
 Setup must succeed before polling or work starts. Overview lists missing requirements and links to their settings. A settings change runs setup again. If you fix something outside the application, such as CLI authentication, choose **Check again**.
 
+0. **Execution → workspace.** The directory whose subdirectories are the repositories a ticket may work in. A ticket checks a repository out by name, and its merge request is watched from there. Empty disables checkout, and a ticket that needs code fails with a clear message.
 1. **Sources.** Set the GitHub repository (`owner/name`) and agent CLI, for example `/home/me/.local/bin/gh-agent`. Requests normally arrive through the agent account's notifications. A new Issue or comment mentioning the account arrives on the next poll; adding a mention by editing an existing Issue body does not. Post a new comment instead. For Feishu, set the bot CLI, chats, each chat's receive-all or mentions-only mode, and whether to receive direct messages.
 2. **Policy.** The two example rules can be edited or removed. Under **On each Source**, add the GitHub accounts and Feishu users who may ask for work; until a list has someone, no request can become a Ticket. With Feishu, a chat can be chosen to sync the list from, at startup and on **Sync now**.
 3. **Execution.** The directory root and a prepare command. To give each Ticket a checkout of the repository:
@@ -227,6 +254,8 @@ The process environment that setup writes:
 A file in `worker-bin` or `worker-gitconfig` that dsh-superagent did not write stops setup. A Ticket directory inside a git repository whose own configuration adds credentials fails the Ticket.
 
 ## Try it
+
+With the Jira Source enabled and the operator assigned an issue in the open sprint, the Source polls every five minutes by default. The issue becomes a Trigger, the ticket checks out the repositories it needs, and its merge request appears on GitLab. Comments on that merge request reach the ticket; merging it ends the ticket.
 
 From an allowed GitHub account, open an Issue or post a comment containing `@<agent login> <request>`. Within a polling interval (one minute by default), Overview should show a Ticket. The agent acknowledges the request, works in its own Session and directory, and delivers in the original conversation. For Feishu, mention the bot in a configured chat.
 

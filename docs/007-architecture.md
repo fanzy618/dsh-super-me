@@ -425,6 +425,8 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/gitlab.spec.ts` | Merge request and note mapping, and the deliverable summary |
 | `tests/gitlab-poll.spec.ts` | One watch round against a CLI stand-in: binding, notes, merge and close, and finding a request by branch |
 | `tests/gitlab-project.spec.ts` | Project paths from ssh and https remotes |
+| `tests/bundle-smoke.spec.ts` | The assembled bundle: the three Sources, their intake flags, forms, health and policy parts |
+| `tests/flow.spec.ts` | A merge request's note reaching its ticket without starting work, and its close ending the ticket |
 | `tests/commands.spec.ts` | CLI calls as the deployment's accounts, the Channels' answers, and repository-scoped GitHub calls |
 | `tests/feishu-read.spec.ts`, `tests/github-read.spec.ts` | Feishu and GitHub reads |
 | `tests/admission-context.spec.ts`, `tests/feishu-image.spec.ts` | The Thread window of assessments, and Feishu image reads |
