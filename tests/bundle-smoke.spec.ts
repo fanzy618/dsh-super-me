@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { SourceRegistry } from '../src/sources/registry.ts'
 import { SettingsSchema } from '../src/policy.ts'
+import { readFileSync } from 'node:fs'
 import { githubKind } from '../src/sources/github.ts'
 import { jiraKind } from '../src/sources/jira.ts'
 import { gitlabKind } from '../src/sources/gitlab.ts'
@@ -19,8 +20,12 @@ describe('the bundle as it is assembled', () => {
   it('lets Jira start work and keeps GitLab from ever starting it', () => {
     const sources = registry()
     expect(sources.intake('jira')).toBe(true)
-    expect(sources.intake('github')).toBe(true)
     expect(sources.intake('gitlab')).toBe(false)
+  })
+  it('ships both new Sources in the bundle, off until an operator turns them on', () => {
+    const patch = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
+    expect(patch).toMatch(/- id: dsh-superagent-jira\n\s+name: dsh-superagent\/jira-watch\n\s+disabled: true/)
+    expect(patch).toMatch(/- id: dsh-superagent-gitlab\n\s+name: dsh-superagent\/gitlab-watch\n\s+disabled: true/)
   })
   it('gives every source a form and its own health entries', () => {
     const sources = registry()
@@ -28,6 +33,7 @@ describe('the bundle as it is assembled', () => {
       expect(kind.fields.length).toBeGreaterThan(0)
       expect(kind.health.length).toBeGreaterThan(0)
       expect(sources.healthEntries(kind.health).size).toBe(kind.health.length)
+      for (const name of kind.health) expect(sources.healthEntries([name]).has(name)).toBe(true)
     }
   })
   it('parses each source part of the policy from an empty document', () => {

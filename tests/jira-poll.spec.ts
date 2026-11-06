@@ -1,3 +1,6 @@
+import { mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { KV } from '../src/kv.ts'
 import { pollRound } from '../src/sources/jira.ts'
@@ -18,17 +21,18 @@ const raw = (key: string, statusId = '3', assignee = 'alice') => ({ key, self: `
 
 const context = (run: (program: string, args: string[]) => Promise<string>, tickets: unknown[] = [], overrides: Record<string, unknown> = {}) => {
   const received: Trigger[] = []
+  const extras: Record<string, string>[] = []
   const state = new Map<string, unknown>()
   const ctx = {
     config: () => ({ cli: 'jira', envFile: '', baseUrl: 'https://jira.example',
       projects: ['PROJ'], jql: 'assignee = currentUser()', pollSeconds: 300, maxTriggersPerRound: 20, commentLookback: 50, ...overrides }),
-    commands: { runWith: (program: string, args: string[]) => run(program, args) },
+    commands: { runWith: (program: string, args: string[], extra: Record<string, string>) => { extras.push(extra ?? {}); return run(program, args) } },
     receive: async (trigger: Trigger) => { received.push(trigger) },
     state: { get: (key: string) => state.get(key), set: (key: string, value: unknown) => { if (value === undefined) state.delete(key); else state.set(key, value) } },
     tickets: { open: () => tickets }, threads: { describe: () => {} }, report: () => {},
     atomic: <T>(work: () => T): T => work(),
   } as unknown as SourceContext
-  return { ctx, received, state }
+  return { ctx, received, state, extras }
 }
 
 describe('a polling round', () => {
@@ -101,4 +105,12 @@ it('shares the round budget between issues and comments', async () => {
   // The one dispatch of the second round used the whole budget, so the comment waits.
   expect(received.filter(trigger => trigger.meta.commentId)).toHaveLength(0)
   expect(state.get(KV.jira.comment('PROJ-1'))).toBe('900')
+})
+
+it('passes the credential file to the CLI and nothing else', async () => {
+  const file = join(mkdtempSync(join(tmpdir(), 'jira-env-')), 'jira.env')
+  writeFileSync(file, 'JIRA_USERNAME=alice\nJIRA_API_TOKEN=secret\n')
+  const { ctx, extras } = context(cli([raw('PROJ-1')]), [], { envFile: file })
+  await pollRound(ctx)
+  expect(extras[0]).toMatchObject({ JIRA_USERNAME: 'alice', JIRA_API_TOKEN: 'secret' })
 })

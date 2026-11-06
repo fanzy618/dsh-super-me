@@ -76,23 +76,23 @@ The Jira Source runs the `jira` CLI as the operator. Sign it in once, then put t
 
 ```sh
 mkdir -p ~/.certs
-printf 'JIRA_USERNAME=%s\nJIRA_API_TOKEN=%s\n' "$USER" "$TOKEN" > ~/.certs/jira.env
+printf 'JIRA_USERNAME=%s\nJIRA_API_TOKEN=%s\n' "<jira login>" "$TOKEN" > ~/.certs/jira.env
 chmod 600 ~/.certs/jira.env
 jira me    # prints the account the CLI acts as
 ```
 
-Set that file as the Source's **Credential file**. Its values are passed to the CLI and are never written to the database, the panel or a log. Leaving it empty uses whatever the environment already holds.
+Set that file as the Source's **Credential file**. Its values are passed to the `jira` process this Source runs and to nothing else; they are not written to the database or the panel, and errors are scrubbed. Leaving the field empty uses whatever the environment already holds.
 
 ### GitLab account
 
-The GitLab Source runs `glab` as the operator, and so does the worker that opens the merge request. Sign it in once:
+The GitLab Source and the worker that opens the merge request both run `glab` as the operator. Sign it in once:
 
 ```sh
 glab auth login --hostname <gitlab host>
 glab auth status
 ```
 
-The plugin never reads or copies that token; it relies on `glab` finding its own configuration.
+The plugin reads neither its token nor its configuration; `glab` finds them itself.
 
 ## Install
 
@@ -170,18 +170,12 @@ Check dsh-superagent: run `scripts/dsh-superagent --profile superagent status` i
 
 Setup must succeed before polling or work starts. Overview lists missing requirements and links to their settings. A settings change runs setup again. If you fix something outside the application, such as CLI authentication, choose **Check again**.
 
-0. **Execution → workspace.** The directory whose subdirectories are the repositories a ticket may work in. A ticket checks a repository out by name, and its merge request is watched from there. Empty disables checkout, and a ticket that needs code fails with a clear message.
-1. **Sources.** Set the GitHub repository (`owner/name`) and agent CLI, for example `/home/me/.local/bin/gh-agent`. Requests normally arrive through the agent account's notifications. A new Issue or comment mentioning the account arrives on the next poll; adding a mention by editing an existing Issue body does not. Post a new comment instead. For Feishu, set the bot CLI, chats, each chat's receive-all or mentions-only mode, and whether to receive direct messages.
-2. **Policy.** The two example rules can be edited or removed. Under **On each Source**, add the GitHub accounts and Feishu users who may ask for work; until a list has someone, no request can become a Ticket. With Feishu, a chat can be chosen to sync the list from, at startup and on **Sync now**.
-3. **Execution.** The directory root and a prepare command. To give each Ticket a checkout of the repository:
-
-   ```sh
-   git -C /home/me/src/widgets fetch --no-tags "https://github.com/$DSH_SUPERAGENT_GITHUB_REPOSITORY.git" "${DSH_SUPERAGENT_GITHUB_PR_HEAD:-HEAD}:refs/dsh-superagent/$DSH_SUPERAGENT_TICKET" &&
-   git -C /home/me/src/widgets worktree add -b "agent/$DSH_SUPERAGENT_NAME" "$DSH_SUPERAGENT_DIR" "refs/dsh-superagent/$DSH_SUPERAGENT_TICKET"
-   ```
-
-   List personal CLIs, such as one signed in to your own account, as blocked commands.
-4. **Prompts.** Set the team sections: the GitHub disclosure line, review bots, the commit author and the auto-merge condition.
+1. **Execution → workspace.** The directory whose subdirectories are the repositories a ticket may work in. A ticket checks a repository out by name into its own directory; empty disables checkout, and a ticket that needs code then fails with a clear message rather than guessing.
+2. **Sources → Jira.** The `jira` CLI, the credential file, the project keys, and the JQL that selects work. The default query asks for the issues assigned to the operator that are in an open sprint. Set the poll interval here (five minutes by default); an issue the operator is assigned arrives on the next poll.
+3. **Policy.** Under **On each Source → Jira**, list the Jira accounts that may originate work. Until the list has someone, no issue becomes a Ticket, so an installation that polls and shows nothing usually has an empty list.
+4. **Sources → GitLab.** The `glab` CLI. This Source watches the merge requests a ticket opens: their state, their notes, and their close. It never starts work, so it needs no allowed list to be safe.
+5. **Execution → prepare.** Normally empty: the checkout tool creates the worktrees. A prepare command is only for extra setup a ticket needs in its directory.
+6. **Prompts.** Set the team sections: the disclosure line, review bots, the commit author and the auto-merge condition.
 
 ### Management API
 
@@ -255,9 +249,13 @@ A file in `worker-bin` or `worker-gitconfig` that dsh-superagent did not write s
 
 ## Try it
 
-With the Jira Source enabled and the operator assigned an issue in the open sprint, the Source polls every five minutes by default. The issue becomes a Trigger, the ticket checks out the repositories it needs, and its merge request appears on GitLab. Comments on that merge request reach the ticket; merging it ends the ticket.
+A Jira-first installation needs four things in place: the Jira Source enabled with a non-empty project list, the operator on its allowed list, a workspace whose subdirectories are the repositories, and `glab` signed in.
 
-From an allowed GitHub account, open an Issue or post a comment containing `@<agent login> <request>`. Within a polling interval (one minute by default), Overview should show a Ticket. The agent acknowledges the request, works in its own Session and directory, and delivers in the original conversation. For Feishu, mention the bot in a configured chat.
+Then assign the operator an issue in the open sprint. On the next poll (five minutes by default) Overview shows a Ticket. The agent acknowledges the request, reads the workspace, checks out the repositories it needs, and opens a merge request with `glab` on the branch `agent/<ticket>`. The GitLab Source picks that request up by its branch, so the worker does not have to report it.
+
+Comments on the merge request reach the ticket on the next GitLab poll (two minutes by default). Merging the request ends the ticket as `merged`; closing it without merging ends it as `closed`. A ticket that checked out several repositories ends only when every one of its merge requests is closed, so an unfinished one keeps it open.
+
+A GitHub-first installation works the same way from the other side: from an allowed account, open an Issue or post a comment containing `@<agent login> <request>`; it arrives on the next notification poll (one minute by default).
 
 ## Upgrade
 
