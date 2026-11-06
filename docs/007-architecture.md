@@ -352,6 +352,14 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/app/views/settings.ts` | The settings page's view: each block with its revision, each Source's settings with its kind's form, and the execution environment |
 | `src/app/views/overview.ts` | The overview: Tickets that need a person, problems, the last day's flow and the Executor's load |
 | `src/executor/dsh.ts` | The DshExecutor, `WorkerSlots`, `ticketExecution`, `inputMessage` and `mandateInstructions` |
+| `src/executor/checkout.ts` | Worktrees for the workspace repositories a ticket works in, with name validation, locks and reuse |
+| `src/sources/jira.ts` | The Jira Source: the CLI query, one polling round, comment reads, the kind and its policy |
+| `src/sources/jira-trigger.ts` | Jira issues and comments as Triggers, and the fingerprint a ticket is about |
+| `src/sources/jira-plan.ts` | Which issues one round dispatches, and what it remembers |
+| `src/sources/gitlab.ts` | The GitLab Source: one watch round over a ticket's merge requests |
+| `src/sources/gitlab-trigger.ts` | Merge requests and notes as Triggers, and the thread a request owns |
+| `src/core/deliverables.ts` | When a ticket's deliverables are all finished, and how it ended |
+| `src/sources/gitlab-project.ts` | The project path a repository's remote names |
 | `src/executor/background.ts` | A worker's background work in DeepSeek Harness, the shell jobs its Session owns (`ctx.jobs`) and its subagents (`ctx.subagents`): `runningJobs`, `untilQuiet`, `killJobs`, `collectJobs`, `stopSubagents`, `stopBackground`, `until`, and `cancelled`, the workers whose turn a stop of their subagents cancelled |
 | `src/infra/commands.ts` | `Commands`, the CLI transport: `run`; `api` and `pages`, limited to the configured repository and validated; `lark` as the bot; `git`. `CliError` carries the code a command's output reports, such as a GitHub HTTP status, and a command that prints nothing fails with how it ended, never with its arguments; `validItems` skips and counts the malformed items of a list |
 | `src/infra/environment.ts` | The agent's process environment: command shims, the git configuration and credential helper, `runAsWorker`, and the checks of the environment and of a Ticket's directory |
@@ -408,6 +416,17 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/policy.spec.ts` | Source scope, the gate, the admission table, Mandate revalidation, the Policy version, settings migrations and assessment outcomes |
 | `tests/registry.spec.ts` | `SourceRegistry`: instances, validation, Policy parts, Channels and Thread context |
 | `tests/sources.spec.ts` | The Feishu and GitHub Sources on a `SourceContext`: translation, polls and read positions, the pull request rules, health |
+| `tests/checkout.spec.ts` | Workspace worktrees: name validation, symbolic links, the protected list, creation, reuse and locks |
+| `tests/checkout-tool.spec.ts` | `orchestrator_checkout` on a running runtime: the paths it returns and what it records on the ticket |
+| `tests/jira.spec.ts` | Jira fingerprints, Trigger mapping and round planning |
+| `tests/jira-poll.spec.ts` | One Jira polling round against a CLI stand-in: dispatch once, comments, changes |
+| `tests/jira-edges.spec.ts` | Pagination, incomplete rounds, the departure matrix, comment failures, ownership and the shared budget |
+| `tests/jira-channel.spec.ts` | Jira replies: the idempotent marker, a gone issue, the link, and the route through the registry |
+| `tests/gitlab.spec.ts` | Merge request and note mapping, and the deliverable summary |
+| `tests/gitlab-poll.spec.ts` | One watch round against a CLI stand-in: binding, notes, merge and close, and finding a request by branch |
+| `tests/gitlab-project.spec.ts` | Project paths from ssh and https remotes |
+| `tests/bundle-smoke.spec.ts` | The assembled bundle: the three Sources, their intake flags, forms, health and policy parts |
+| `tests/flow.spec.ts` | A merge request's note reaching its ticket without starting work, and its close ending the ticket |
 | `tests/commands.spec.ts` | CLI calls as the deployment's accounts, the Channels' answers, and repository-scoped GitHub calls |
 | `tests/feishu-read.spec.ts`, `tests/github-read.spec.ts` | Feishu and GitHub reads |
 | `tests/admission-context.spec.ts`, `tests/feishu-image.spec.ts` | The Thread window of assessments, and Feishu image reads |

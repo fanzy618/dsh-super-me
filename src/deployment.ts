@@ -50,9 +50,12 @@ export const FeishuBotSchema = z.object({ cli: z.string().trim().default('') })
 /** Source configuration keys that affect deployment setup and trigger a restart when changed. */
 export const SETUP_FIELDS: Readonly<Record<string, readonly string[]>> = { github: Object.keys(GithubAccountsSchema.shape), feishu: Object.keys(FeishuBotSchema.shape) }
 
+export interface GithubAccount { cli: string; login: string; noreply: string }
 export interface Deployment extends Machine {
+  /** The canonical `owner/name` of the one GitHub repository, or '' when this installation has no GitHub Source. */
   repository: string
-  github: { cli: string; login: string; noreply: string }
+  /** Resolved from the GitHub Source; absent when that Source names neither a repository nor a CLI. */
+  github?: GithubAccount
   feishu?: FeishuBot
 }
 export interface FeishuBot { cli: string; appId: string; brand: 'feishu' | 'lark'; botId: string; name: string }
@@ -84,11 +87,19 @@ function parsed<T>(schema: z.ZodType<T>, text: string): T | undefined {
   return result.success ? result.data : undefined
 }
 /** Verify the agent's GitHub CLI identity and push access to the configured repository. */
-export async function resolveDeployment(machine: Machine, github: unknown, probe: Probe, path = process.env.PATH ?? ''): Promise<Deployment> {
+export interface GithubResolution { repository: string; github: GithubAccount }
+/**
+ * Resolves the agent's GitHub account and its push access, or undefined when the GitHub Source is not configured.
+ * A Source that names only one of the two values is misconfiguration and still fails setup.
+ */
+export async function resolveGithub(machine: Machine, github: unknown, probe: Probe, path = process.env.PATH ?? ''): Promise<GithubResolution | undefined> {
   const { stateDir } = machine
   const accounts = GithubAccountsSchema.parse(github ?? {})
   const remote = accounts.repository
-  if (!remote) throw new SetupError('repositoryUnset')
+  if (!remote) {
+    if (accounts.cli) throw new SetupError('repositoryUnset')
+    return undefined
+  }
   if (!accounts.cli) throw new SetupError('agentCliUnset')
   let cli: string
   try { cli = executable(accounts.cli, path, workerBin(stateDir)) } catch (error) { throw new SetupError('agentCliMissing', { output: reason(error) }) }
@@ -102,7 +113,19 @@ export async function resolveDeployment(machine: Machine, github: unknown, probe
   if (!access) throw new SetupError('repositoryUnreported', { repository: remote })
   const repository = access.name
   if (access.push !== true) throw new SetupError('repositoryReadOnly', { account: agent.login, repository })
-  return { ...machine, repository, github: { cli, login: agent.login, noreply: `${agent.id}+${agent.login}@users.noreply.github.com` } }
+  return { repository, github: { cli, login: agent.login, noreply: `${agent.id}+${agent.login}@users.noreply.github.com` } }
+}
+
+/** The GitHub account, or a clear failure for code paths that only run while the GitHub Source is configured. */
+export function requireGithub(deployment: Pick<Deployment, 'github'>): GithubAccount {
+  if (!deployment.github) throw new Error('This installation has no GitHub account: configure the GitHub Source repository and CLI first.')
+  return deployment.github
+}
+
+/** Resolves the machine settings and, when the GitHub Source is configured, its account and repository. */
+export async function resolveDeployment(machine: Machine, github: unknown, probe: Probe, path = process.env.PATH ?? ''): Promise<Deployment> {
+  const resolved = await resolveGithub(machine, github, probe, path)
+  return { ...machine, repository: resolved?.repository ?? '', ...resolved ? { github: resolved.github } : {} }
 }
 
 const AuthStatus = z.object({ appId: z.string().regex(/^cli_[A-Za-z0-9]+$/), brand: z.enum(['feishu', 'lark']).default('feishu'), identities: z.object({ bot: z.object({ status: z.string() }) }) })

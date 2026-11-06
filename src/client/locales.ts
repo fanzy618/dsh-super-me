@@ -745,6 +745,13 @@ const TEXT = {
   'healthCode.sourceOff': ['已关闭', HEALTH_TEXT.sourceOff],
   'healthCode.feishuCliUnset': ['来源已打开，还没有设置机器人的 lark-cli', HEALTH_TEXT.feishuCliUnset],
   'healthCode.feishuBotMissing': ['等待飞书机器人', HEALTH_TEXT.feishuBotMissing],
+  'healthCode.githubUnset': ['未配置 GitHub 账号', HEALTH_TEXT.githubUnset],
+  'healthCode.jiraCliUnset': ['来源已打开，还没有设置 jira CLI', HEALTH_TEXT.jiraCliUnset],
+  'healthCode.jiraAuthFailed': ['jira CLI 无法读取其账号', HEALTH_TEXT.jiraAuthFailed],
+  'healthCode.jiraPollIncomplete': ['本轮未能读全，未做任何变更', HEALTH_TEXT.jiraPollIncomplete],
+  'healthCode.jiraNoProjects': ['Jira 来源没有指定项目', HEALTH_TEXT.jiraNoProjects],
+  'healthCode.jiraCommentsUnreadable': ['有一条评论读不动，游标未前进', HEALTH_TEXT.jiraCommentsUnreadable],
+  'healthCode.jiraCommentsTruncated': ['待读评论超过单次读取上限；游标未前进，请调大读取条数', HEALTH_TEXT.jiraCommentsTruncated],
   'healthCode.pollFailures': ['连续 {count} 次轮询失败，最近一次：{error}', HEALTH_TEXT.pollFailures],
 } as const satisfies Record<string, readonly [string, string]>
 export type DshSuperagentKey = keyof typeof TEXT

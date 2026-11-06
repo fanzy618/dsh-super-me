@@ -3,7 +3,7 @@ import { execFile } from 'node:child_process'
 import { basename } from 'node:path'
 import { promisify } from 'node:util'
 import { z } from 'zod'
-import type { Deployment } from '../deployment.ts'
+import type { Deployment, GithubAccount } from '../deployment.ts'
 
 const exec = promisify(execFile)
 const TIMEOUT_MS = 90_000
@@ -63,7 +63,16 @@ export class Commands {
    */
   constructor(private readonly resolved: () => Deployment, private readonly environment: Record<string, string | undefined>, private readonly signal: AbortSignal) {}
   get deployment(): Deployment { return this.resolved() }
-  get repository(): string { return this.deployment.repository }
+  /** The GitHub account; throws a clear error when this installation has no GitHub Source. */
+  get github(): GithubAccount {
+    const github = this.deployment.github
+    if (!github) throw new Error('This installation has no GitHub account: configure the GitHub Source repository and CLI first.')
+    return github
+  }
+  get repository(): string {
+    if (!this.deployment.repository) throw new Error('This installation has no GitHub repository: configure it on the GitHub Source first.')
+    return this.deployment.repository
+  }
   withSignal(signal?: AbortSignal): Commands { return signal ? new Commands(this.resolved, this.environment, AbortSignal.any([this.signal, signal])) : this }
   async run(program: string, args: string[], cwd?: string): Promise<string> {
     try {
@@ -72,8 +81,16 @@ export class Commands {
       return stdout
     } catch (error) { throw commandError(error, program) }
   }
+  /** Runs a program with extra environment variables (such as a credential file) merged over the deployment environment. */
+  async runWith(program: string, args: string[], extra: Record<string, string>): Promise<string> {
+    try {
+      const { stdout } = await exec(program, args, { signal: this.signal, timeout: TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024,
+        env: { ...process.env, ...this.environment, ...extra } })
+      return stdout
+    } catch (error) { throw commandError(error, program) }
+  }
   /** Runs the agent's GitHub CLI and parses its JSON output; callers should prefer `api`, which is restricted to the configured repository and validates output. */
-  async gh<T>(args: string[]): Promise<T> { return JSON.parse(await this.run(this.deployment.github.cli, args)) as T }
+  async gh<T>(args: string[]): Promise<T> { return JSON.parse(await this.run(this.github.cli, args)) as T }
   /**
    * Calls the GitHub API on a path within the configured repository, validating JSON output when a schema is provided
    * or returning raw CLI output (such as raw files or `--include` headers) when omitted.
@@ -82,7 +99,7 @@ export class Commands {
   async api<T>(schema: z.ZodType<T>, path: string, ...flags: string[]): Promise<T>
   async api(path: string, ...flags: string[]): Promise<string>
   async api<T>(schema: z.ZodType<T> | string, ...rest: string[]): Promise<T | string> {
-    if (typeof schema === 'string') return this.run(this.deployment.github.cli, ['api', this.path(schema), ...rest])
+    if (typeof schema === 'string') return this.run(this.github.cli, ['api', this.path(schema), ...rest])
     const [path = '', ...flags] = rest
     return schema.parse(await this.gh(['api', this.path(path), ...flags]))
   }

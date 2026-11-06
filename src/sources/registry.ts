@@ -95,7 +95,11 @@ export class SourceRegistry implements SourceScope {
   async send(message: OutboundMessage, commands: Commands): Promise<'sent' | 'gone' | 'waiting'> {
     const kind = this.kinds.get(message.channel.source)
     if (!kind) return 'waiting'
-    return kind.channel ? kind.channel.send({ commands }, message) : 'gone'
+    if (!kind.channel) return 'gone'
+    const instance = this.resolve(kind, this.settings().sources[message.channel.source])
+    // A Source that is off cannot speak; its queued replies wait for it to come back instead of being dropped.
+    if (!instance.enabled) return 'waiting'
+    return kind.channel.send({ commands }, message, instance.config)
   }
   link(channel: ChannelRef, links: ChannelLinks): ChannelLink {
     const link = this.kinds.get(channel.source)?.channel?.link(channel.address, links)
@@ -120,6 +124,10 @@ export class SourceRegistry implements SourceScope {
         return context.image(agent, commands, trigger, message, key, stateDir, signal)
       },
     }
+  }
+  intake(source: string): boolean {
+    // A Source whose plugin is missing cannot start work; its stored Triggers would otherwise queue for Eval.
+    return this.kinds.get(source)?.intake !== false
   }
   scope(input: { source: string; meta: Record<string, unknown> }, settings = this.settings()): ScopeResult {
     const kind = this.kinds.get(input.source)

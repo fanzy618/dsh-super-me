@@ -11,6 +11,8 @@ export type ScopeResult = { listened: true; observed: boolean; row?: string } | 
 /** Source configuration as the domain sees it: listening scope per trigger or per recorded Mandate basis. */
 export interface SourceScope {
   scope(input: { source: string; meta: Record<string, unknown> }): ScopeResult
+  /** Whether a Source's Trigger may start new work; a watch-only Source never does. */
+  intake(source: string): boolean
 }
 
 /** Versioned rules; `gate` decides who may originate work. Source scope is not part of Policy. */
