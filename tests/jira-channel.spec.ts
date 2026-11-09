@@ -38,7 +38,7 @@ describe('the Jira Channel', () => {
     expect(add).toContain('--no-input')
   })
   it('does not post a reply that an earlier attempt already posted', async () => {
-    const { host: h, calls } = host([comment('900', 'already <sub>dsh-superagent:dup-1</sub>')])
+    const { host: h, calls } = host([comment('900', 'already posted\n\ndsh\\-superagent:dup-1')])
     await expect(jiraKind.channel!.send(h, message('dup-1'), config)).resolves.toBe('sent')
     expect(calls.some(call => call[1] === 'comment')).toBe(false)
   })
@@ -57,7 +57,7 @@ describe('the Jira Channel', () => {
     expect(calls.some(call => call[1] === 'comment')).toBe(false)
   })
   it('does not mistake a longer message id for the one it is looking for', async () => {
-    const { host: h, calls } = host([comment('900', 'already <sub>dsh-superagent:long-10</sub>')])
+    const { host: h, calls } = host([comment('900', 'already dsh\\-superagent:long-10')])
     await expect(jiraKind.channel!.send(h, message('long-1'), config)).resolves.toBe('sent')
     expect(calls.some(call => call[1] === 'comment')).toBe(true)
   })

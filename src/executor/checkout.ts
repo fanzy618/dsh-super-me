@@ -52,7 +52,9 @@ async function locate(workspace: string, name: string, forbidden: Set<string>): 
   if (forbidden.has(name)) throw new CheckoutError('protected', `${name} is protected: ${PROTECTED_FILE} names it`)
   const path = join(workspace, name)
   let stats
-  try { stats = await lstat(path) } catch { throw new CheckoutError('missing', `${name} is not in the workspace ${workspace}`) }
+  try { stats = await lstat(path) } catch {
+    throw new CheckoutError('missing', `${name} is not in the workspace ${workspace}; ask the operator which repositories belong there instead of working outside it`)
+  }
   if (stats.isSymbolicLink()) throw new CheckoutError('symlink', `${name} is a symbolic link; a ticket checks out directories only`)
   if (!stats.isDirectory()) throw new CheckoutError('notDirectory', `${name} is not a directory`)
   const [root, real] = await Promise.all([realpath(workspace), realpath(path)])

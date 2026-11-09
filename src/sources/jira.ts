@@ -22,7 +22,9 @@ const Z = z.object({
 }).strict()
 export type JiraConfig = z.infer<typeof Z>
 
-/** Jira's issue as `--raw` returns it, narrowed to the fields this Source reads. */
+/** A row of `issue list --raw`: Jira's list output is trimmed, so it names the issue and its timestamp only. */
+const RawRow = z.looseObject({ key: z.string(), fields: z.looseObject({ updated: z.string() }) })
+/** Jira's issue as `issue view --raw` returns it, narrowed to the fields this Source reads. */
 const RawIssue = z.looseObject({
   key: z.string(),
   self: z.string().optional(),
@@ -68,28 +70,43 @@ const run = (ctx: SourceContext, config: JiraConfig, env: Record<string, string>
 
 /** Parses CLI output, or undefined when it is not JSON (a failure the caller treats as incomplete). */
 const jsonOf = (text: string): unknown => { try { return JSON.parse(text) } catch { return undefined } }
+/** Whether a comment's body carries this message's marker. Jira stores what its wiki converter made of the
+ * text, which escapes punctuation, so backslashes are dropped before the token is looked for; the token
+ * must stand alone, so that `m-1` does not match `m-10`. */
+export const mentions = (body: string, id: string): boolean =>
+  new RegExp(`(^|[^A-Za-z0-9-])dsh-superagent:${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^A-Za-z0-9-]|$)`)
+    .test(body.replace(/\\/g, ''))
+
 /** Message ids this process has already posted, by issue; the marker in the body covers a restart. */
 const sentTo = new Map<string, Set<string>>()
 /** Replies in flight, so two attempts at the same message cannot both pass the check. */
 const sending = new Set<string>()
 const page = 100
-/** Reads every page of the query; a short page ends it, and any failure makes the round incomplete. */
+/** Reads every page of the query, then each issue's full record; a short page ends it and any failure makes the round incomplete. */
 async function readIssues(ctx: SourceContext, config: JiraConfig, env: Record<string, string>, project: string): Promise<{ issues: JiraIssue[]; complete: boolean }> {
-  const issues: JiraIssue[] = []
+  const rows: { key: string }[] = []
   for (let from = 0; from < page * 50; from += page) {
     const result = await run(ctx, config, env, ['issue', 'list', '-p', project, '-q', config.jql, '--raw', '--paginate', `${from}:${page}`]).catch(() => undefined)
-    if (result === undefined) return { issues, complete: false }
+    if (result === undefined) return { issues: [], complete: false }
     const raw = z.array(z.unknown()).safeParse(jsonOf(result))
-    if (!raw.success) return { issues, complete: false }
-    // Completeness is the size of the page the CLI returned, not the number of records that parsed: a
-    // record this build cannot read must not look like the end of the query.
+    if (!raw.success) return { issues: [], complete: false }
     const items = raw.data
-    const parsed = items.map(item => RawIssue.safeParse(item))
-    if (parsed.some(item => !item.success)) return { issues, complete: false }
-    issues.push(...parsed.flatMap(item => item.success ? [parseIssue(item.data, config.baseUrl)] : []))
-    if (items.length < page) return { issues, complete: true }
+    const parsed = items.map(item => RawRow.safeParse(item))
+    // Completeness is the size of the page the CLI returned, not the number of rows that parsed.
+    if (parsed.some(item => !item.success)) return { issues: [], complete: false }
+    rows.push(...parsed.flatMap(item => item.success ? [{ key: item.data.key }] : []))
+    if (items.length < page) break
+    if (from + page >= page * 50) return { issues: [], complete: false }
   }
-  return { issues, complete: false }
+  // The list output is trimmed (a status has a name but no id, an assignee has a display name but no
+  // login), so each issue is read in full before it becomes a Trigger.
+  const issues: JiraIssue[] = []
+  for (const row of rows) {
+    const raw = await run(ctx, config, env, ['issue', 'view', row.key, '--raw']).then(value => RawIssue.safeParse(jsonOf(value)), () => undefined)
+    if (!raw || !raw.success) return { issues: [], complete: false }
+    issues.push(parseIssue(raw.data, config.baseUrl))
+  }
+  return { issues, complete: true }
 }
 /** True when the issue left the query for a reason the Source can confirm: it is done, or no longer assigned to the operator. */
 /** True when the issue left the query for a reason the Source can confirm: done, or no longer assigned to the operator. */
@@ -208,7 +225,6 @@ export const jiraKind: SourceKind<JiraConfig> = {
       // A key that is not a Jira key cannot be a reply target; treat it as gone rather than passing it to the CLI.
       if (!/^[A-Z][A-Z0-9_]*-\d+$/.test(issue)) return 'gone'
       const token = `dsh-superagent:${message.id}`
-      const marker = `<sub>${token}</sub>`
       const sent = sentTo.get(issue)
       if (sent?.has(message.id)) return 'sent'
       if (sending.has(`${issue}\0${message.id}`)) throw new Error(`${issue} is already being answered`)
@@ -220,11 +236,11 @@ export const jiraKind: SourceKind<JiraConfig> = {
           .then(value => CommentBodies.safeParse(value))
         // Without a readable list there is no way to know whether the comment exists, so leave it to the retry.
         if (!comments.success) throw new Error(`the comments of ${issue} could not be read, so the reply was not posted`)
-        if (comments.data.fields.comment.comments.some(comment => (comment.body ?? '').includes(marker))) {
+        if (comments.data.fields.comment.comments.some(comment => mentions(comment.body ?? '', message.id))) {
           sentTo.get(issue)?.add(message.id) ?? sentTo.set(issue, new Set([message.id]))
           return 'sent'
         }
-        try { await host.commands.runWith(config.cli, ['issue', 'comment', 'add', issue, `${message.text}\n\n${marker}`, '--no-input'], env) }
+        try { await host.commands.runWith(config.cli, ['issue', 'comment', 'add', issue, `${message.text}\n\n${token}`, '--no-input'], env) }
         catch (error) {
           // Only the Jira API reporting the issue missing means the target is gone; any other failure may pass.
           if (/unexpected response '40[34]'/i.test(String(error))) return 'gone'

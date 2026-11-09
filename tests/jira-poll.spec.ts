@@ -10,9 +10,10 @@ import type { Trigger } from '../src/core/index.ts'
 /** A Jira CLI stand-in: it answers `me`, one page of issues, an issue view and its comments. */
 const cli = (issues: unknown[], comments: unknown[] = []) => async (_program: string, args: string[]): Promise<string> => {
   if (args[0] === 'me') return 'alice\n'
-  if (args[0] === 'issue' && args[1] === 'list') return JSON.stringify(issues)
+  // `issue list --raw` returns trimmed rows; the full record comes from `issue view`.
+  if (args[0] === 'issue' && args[1] === 'list') return JSON.stringify(issues.map(issue => ({ key: (issue as { key: string }).key, fields: { updated: (issue as { fields: { updated: string } }).fields.updated } })))
   if (args[0] === 'issue' && args[1] === 'view' && args.includes('--comments')) return JSON.stringify({ fields: { comment: { comments } } })
-  if (args[0] === 'issue' && args[1] === 'view') return JSON.stringify(issues[0] ?? {})
+  if (args[0] === 'issue' && args[1] === 'view') return JSON.stringify(issues.find(issue => (issue as { key: string }).key === args[2]) ?? {})
   return ''
 }
 const raw = (key: string, statusId = '3', assignee = 'alice') => ({ key, self: `https://jira.example/rest/api/2/issue/${key}`,

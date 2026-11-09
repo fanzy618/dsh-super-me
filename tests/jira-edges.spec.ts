@@ -28,7 +28,8 @@ const runWith = (fake: Fake, calls: string[][]) => async (_program: string, args
     const page = fake.pages?.[calls.filter(call => call[1] === 'list').length - 1]
     if (page === 'error') throw new Error('jira: 500')
     if (page === 'garbage' || page === undefined) return 'not json'
-    return JSON.stringify(page)
+    // The list output is trimmed: only the key and the timestamp.
+    return JSON.stringify((page as { key: string; fields: { updated: string } }[]).map(issue => ({ key: issue.key, fields: { updated: issue.fields.updated } })))
   }
   if (args[0] === 'issue' && args[1] === 'view') {
     const key = args[2]!
@@ -37,7 +38,8 @@ const runWith = (fake: Fake, calls: string[][]) => async (_program: string, args
       if (value === 'error') throw new Error('jira: comments failed')
       return JSON.stringify({ fields: { comment: { comments: value } } })
     }
-    const view = fake.views?.[key]
+    const view = fake.views?.[key] ?? (fake.pages ?? []).flatMap(page => Array.isArray(page) ? page : [])
+      .find(issue => (issue as { key?: string }).key === key)
     if (view === 'error') throw new Error('jira: view failed')
     if (view === 'garbage' || view === undefined) return 'not json'
     return JSON.stringify(view)

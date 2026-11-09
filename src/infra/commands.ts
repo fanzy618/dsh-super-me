@@ -1,5 +1,5 @@
 /** Subprocess wrapper for running gh, lark-cli, and git commands under the deployment's configured accounts. */
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { basename } from 'node:path'
 import { promisify } from 'node:util'
 import { z } from 'zod'
@@ -81,13 +81,31 @@ export class Commands {
       return stdout
     } catch (error) { throw commandError(error, program) }
   }
-  /** Runs a program with extra environment variables (such as a credential file) merged over the deployment environment. */
+  /**
+   * Runs a program with extra environment variables (such as a credential file) merged over the deployment environment.
+   * stdin is closed: a CLI that would read it must see end-of-file rather than wait until the timeout.
+   */
   async runWith(program: string, args: string[], extra: Record<string, string>): Promise<string> {
-    try {
-      const { stdout } = await exec(program, args, { signal: this.signal, timeout: TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024,
+    return new Promise<string>((resolve, reject) => {
+      const child = spawn(program, args, { stdio: ['ignore', 'pipe', 'pipe'],
         env: { ...process.env, ...this.environment, ...extra } })
-      return stdout
-    } catch (error) { throw commandError(error, program) }
+      let out = '', err = '', bytes = 0
+      const fail = (error: Error & { code?: unknown; killed?: boolean; signal?: string | null }): void => { clearTimeout(timer); child.kill('SIGTERM'); reject(error) }
+      const timer = setTimeout(() => fail(Object.assign(new Error('timed out'), { killed: true, signal: 'SIGTERM' })), TIMEOUT_MS)
+      child.on('error', error => fail(error))
+      child.stdout.on('data', (chunk: Buffer) => {
+        bytes += chunk.length
+        if (bytes > 16 * 1024 * 1024) fail(Object.assign(new Error('too much output'), { code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' }))
+        else out += chunk.toString()
+      })
+      child.stderr.on('data', (chunk: Buffer) => { err += chunk.toString() })
+      child.on('close', code => {
+        clearTimeout(timer)
+        if (code === 0) resolve(out)
+        else reject(Object.assign(new Error(err.trim() || `${program} exited with ${code}`), { code, stderr: err }))
+      })
+      this.signal.addEventListener('abort', () => child.kill('SIGTERM'), { once: true })
+    }).catch((error: unknown) => { throw commandError(error, program) })
   }
   /** Runs the agent's GitHub CLI and parses its JSON output; callers should prefer `api`, which is restricted to the configured repository and validates output. */
   async gh<T>(args: string[]): Promise<T> { return JSON.parse(await this.run(this.github.cli, args)) as T }
