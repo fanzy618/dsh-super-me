@@ -1,5 +1,5 @@
 /** Host and context interfaces connecting Source plugins to the application; also imported by the web panel, so it must not import Node-only modules. */
-import type { ChannelRef, ReceiveResult, OutboundMessage, Thread, ThreadFact, ThreadRef, Ticket, Trigger } from '../core/index.ts'
+import type { ChannelRef, Deliverable, ReceiveResult, OutboundMessage, Thread, ThreadFact, ThreadRef, Ticket, Trigger } from '../core/index.ts'
 import type { Commands } from '../infra/commands.ts'
 import type { Deployment } from '../deployment.ts'
 import type { SourceRegistry } from './registry.ts'
@@ -13,6 +13,13 @@ export const HEALTH_TEXT = {
   sourceOff: 'Off',
   feishuCliUnset: 'The Source is on, and its bot lark-cli is not set',
   feishuBotMissing: 'Waiting for the Feishu bot',
+  githubUnset: 'No GitHub account is configured',
+  jiraCliUnset: 'The Source is on, and its jira CLI is not set',
+  jiraAuthFailed: 'The jira CLI cannot read its account',
+  jiraPollIncomplete: 'A polling round could not read every page, so nothing changed',
+  jiraNoProjects: 'The Jira Source names no project',
+  jiraCommentsUnreadable: 'A comment could not be read, so the cursor did not move',
+  jiraCommentsTruncated: 'More comments than one read returns were waiting; the cursor did not move, so raise the comment lookback',
   pollFailures: '{count} consecutive failed polls; last: {error}',
 } as const
 export type HealthCode = keyof typeof HEALTH_TEXT
@@ -54,6 +61,8 @@ export interface SourceContext {
     get(id: string): Ticket | undefined
     /** Open tickets, newest first. */
     open(): Ticket[]
+    /** Records (or updates) one deliverable of an open ticket: which repository, which merge request, what state. */
+    record(id: string, item: Deliverable): void
     /** Binds an open ticket to follow a Source Thread (`own` when opened by the ticket) so the Thread's close, not a ready report, ends the ticket. */
     bindThread(id: string, thread: ThreadRef, own: boolean): void
     /** Reports that a followed Thread closed at `at`; each open ticket following it ends once no `own` Thread remains open and no resumed work is still running. */

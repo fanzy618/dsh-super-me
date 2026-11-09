@@ -92,6 +92,8 @@ export const ExecutorConfigSchema = z.object({
   model: RoleModelSchema.nullable().default(null),
   maxWorkers: z.number().int().min(LIMITS.maxWorkers.min).max(LIMITS.maxWorkers.max).default(3),
   directory: z.string().trim().refine(path => path === '' || path.startsWith('/'), 'An absolute path, or empty for <stateDir>/work').default(''),
+  /** The workspace a ticket checks repositories out of: one directory per repository. Empty disables checkout. */
+  workspace: z.string().trim().refine(path => path === '' || path.startsWith('/'), 'An absolute path, or empty when no workspace is configured').default(''),
   prepare: z.string().max(LIMITS.prepareCommand).default(''),
   blockedCommands: z.array(CommandNameSchema).default([]),
 }).strict()

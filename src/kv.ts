@@ -6,6 +6,7 @@ import type { PromptVersion } from './app/prompts.ts'
 import type { SettingsVersion } from './app/store.ts'
 import type { SettingsSave } from './policy.ts'
 import type { Retry } from './sources/github.ts'
+import type { PendingEntry, SeenEntry } from './sources/jira-plan.ts'
 
 /** Key of a KV record whose value has type `V`; a plain string represents an untyped key. */
 export type Key<V> = string & { readonly __value?: V }
@@ -48,6 +49,13 @@ export const KV = {
     stream: family<{ since: string; started: Record<string, string>; etag?: string }, [stream: string]>('github-stream:'),
     branchCi: record<{ branch?: string; failures?: string[]; revision: number }>('github-branch-ci'),
     ci: family<{ fingerprint: string; revision: number }, [number: number]>('github-ci:') },
+  /** Jira Source: what the last round recorded per issue, the queue waiting for a dispatch slot, and each issue's comment cursor. */
+  jira: { seen: record<Record<string, SeenEntry>>('jira-seen'), pending: record<PendingEntry[]>('jira-pending'),
+    comment: family<string, [issue: string]>('jira-comment:') },
+  /** GitLab Source: whether a ticket already follows a merge request, and the note id it read up to. */
+  gitlab: { bound: family<boolean, [ticket: string, thread: string]>('gitlab-bound:'),
+    closed: family<boolean, [ticket: string, thread: string]>('gitlab-closed:'),
+    note: family<number, [thread: string]>('gitlab-note:') },
   /**
    * Feishu Source: known chats (`true` for direct messages); per-chat history cursor and active topics mapped from topic ID
    * to last-seen timestamp; and per-polled-thread seen message IDs and initialization flag.

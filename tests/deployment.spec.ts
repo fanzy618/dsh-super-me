@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { Config, executable, machineOf, resolveDeployment, resolveFeishuBot, type Machine, type Probe } from '../src/deployment.ts'
+import { Config, executable, machineOf, resolveDeployment, resolveFeishuBot, resolveGithub, type Machine, type Probe } from '../src/deployment.ts'
 import { gitEnv } from './fixtures/git.ts'
 
 const exec = promisify(execFile)
@@ -97,5 +97,22 @@ describe('setup', () => {
     await refuses('feishuNoBot')
     program(join(dir, 'bin', 'lark-cli'), 'echo "not configured" >&2; exit 1')
     await refuses('feishuCliFailed', { output: expect.stringContaining('not configured') })
+  })
+})
+
+describe('deployment without GitHub', () => {
+  it('resolves no GitHub access when the Source names neither a repository nor a CLI', async () => {
+    expect(await resolveGithub(machine(), {}, probe, path)).toBeUndefined()
+    const deployment = await resolveDeployment(machine(), {}, probe, path)
+    expect(deployment.repository).toBe('')
+    expect(deployment.github).toBeUndefined()
+  })
+  it('still refuses a partial GitHub configuration', async () => {
+    await expect(resolveGithub(machine(), { cli: 'gh' }, probe, path)).rejects.toEqual(setupError('github', 'repositoryUnset', {}))
+    await expect(resolveGithub(machine(), { repository: 'acme/widgets' }, probe, path)).rejects.toEqual(setupError('github', 'agentCliUnset', {}))
+  })
+  it('resolves the account when both are configured', async () => {
+    expect(await resolveGithub(machine(), { repository: 'acme/widgets', cli: 'gh' }, probe, path))
+      .toEqual({ repository: 'acme/widgets', github: { cli: join(dir, 'bin', 'gh'), login: 'Agent-Bot', noreply: '7+Agent-Bot@users.noreply.github.com' } })
   })
 })

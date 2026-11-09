@@ -2,6 +2,10 @@
 import { z } from 'zod'
 import { liveTicket, type EngineForExecutor, type Ticket } from '../../core/index.ts'
 import { IM_WORDS } from '../../infra/text.ts'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+import { checkout } from '../../executor/checkout.ts'
+import { projectFromRemote } from '../../sources/gitlab-project.ts'
 import { claimPull, readPull } from '../../sources/github-pull.ts'
 import type { SourceContext } from '../../sources/host.ts'
 import { readResource, type ResourceHost } from '../resources.ts'
@@ -12,11 +16,13 @@ import { AcknowledgementSchema, readTool, tool, type Tool } from './tool.ts'
 
 export interface ExecutorToolsHost {
   readonly engine: Pick<EngineForExecutor, 'report' | 'reply' | 'markUnrelated' | 'handback' | 'followForContext'>
-  readonly store: Pick<Store, 'tickets' | 'replyStatus' | 'atomic'>
+  readonly store: Pick<Store, 'tickets' | 'replyStatus' | 'atomic' | 'settings'>
   readonly sessions: Pick<Sessions, 'relay' | 'notify'>
   readonly resources: ResourceHost
   /** GitHub Source context whose pull-request rules govern claiming a reported PR. */
   readonly github: SourceContext
+  /** Machine settings, for the ticket directory root. */
+  readonly machine: { readonly stateDir: string }
   sendReplies(): Promise<void>
 }
 
@@ -72,6 +78,43 @@ export function executorTools(host: ExecutorToolsHost, ticket: Ticket): Tool[] {
       execute: async args => ({ trigger_id: args.trigger_id, queued: host.engine.handback(ticketId, args.trigger_id, args.reason) }),
     }),
     tool({
+      name: 'orchestrator_checkout',
+      description: 'Check out the workspace repositories this ticket works in, on the ticket branch. Call it once you know which repositories the request needs, before editing code; it records them on the ticket and returns their paths. Refused repositories are named with the reason.',
+      schema: z.object({
+        repos: z.array(z.string().regex(/^[a-z0-9][a-z0-9._-]*$/)).min(1).max(3)
+          .describe('Workspace directory names, one path segment each, at most three.'),
+      }).strict(),
+      execute: async args => {
+        const current = host.store.tickets.get(ticketId)
+        if (!current || !liveTicket(current)) throw new Error('Ticket ended; do not resume it')
+        const workspace = host.store.settings().executor.workspace
+        if (!workspace) throw new Error('No workspace is configured: set the workspace directory in the Execution settings.')
+        const directory = current.execution?.directory ?? ''
+        if (!directory) throw new Error('The ticket has no directory yet; it appears once the assignment starts.')
+        const name = current.execution?.name ?? current.id
+        const checked = await checkout({ workspace, directory, branch: `agent/${name}`, repos: args.repos })
+        // The project a repository belongs to is what the watcher calls the API with; record it now so a
+        // merge request the worker opens later is found by its branch.
+        const projects = new Map<string, string>()
+        for (const item of checked) {
+          const remote = await promisify(execFile)('git', ['-C', item.path, 'config', '--get', 'remote.origin.url'], { timeout: 30_000 })
+            .then(result => result.stdout.trim(), () => '')
+          const project = projectFromRemote(remote)
+          if (project) projects.set(item.name, project)
+        }
+        host.store.atomic(() => {
+          const fresh = host.store.tickets.get(ticketId)
+          if (!fresh) return
+          const repos = [...new Set([...(fresh.repos ?? []), ...args.repos])]
+          const known = new Set((fresh.deliverables ?? []).map(item => item.repo))
+          const deliverables = [...fresh.deliverables ?? [], ...checked.filter(item => !known.has(item.name))
+            .map(item => ({ repo: item.name, project: '', kind: 'mr' as const, state: 'pending' as const }))]
+          host.store.tickets.save({ ...fresh, repos, deliverables, deliver: fresh.deliver ?? { kind: 'mr' }, updatedAt: new Date().toISOString() })
+        })
+        return { repos: checked }
+      },
+    }),
+    tool({
       name: 'orchestrator_report',
       description: 'Report progress, ready, blocked, failed or dropped, as the work and handoff sections say.',
       schema: z.object({
@@ -79,7 +122,7 @@ export function executorTools(host: ExecutorToolsHost, ticket: Ticket): Tool[] {
         summary: z.string().min(1),
         human_action: z.string().trim().min(1).max(1000).nullish().describe('One concrete question for a person, also with state=progress; omit to keep the pending one, null to clear it.'),
         question_for_trigger_id: z.string().optional().describe('With human_action: the human message that raised the question, which is asked where that person wrote.'),
-        pr_number: z.number().int().positive().nullish().describe(`The ticket's PR: its source PR, or one by ${host.github.deployment.github.login} from a branch named after this ticket (DSH_SUPERAGENT_NAME).`),
+        pr_number: z.number().int().positive().nullish().describe(`The ticket's PR: its source PR, or one by ${host.github.deployment.github?.login ?? 'the agent account'} from a branch named after this ticket (DSH_SUPERAGENT_NAME).`),
         reply_to_trigger_id: z.string().optional().describe('The explicit human question this report answers; never for ordinary progress.'),
       }).strict(),
       execute: async (args, signal) => {
